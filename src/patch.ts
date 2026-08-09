@@ -1,114 +1,198 @@
+import { join } from 'node:path'
 /**
- * §3.2 patch 格式检查 —— 极简 YAML 行解析 bundle patch 的 `- insert:` 结构，
- * 校验条目完整性、name 与包名一致性、row id 唯一性。
+ * patch 解析 v2 —— 审查 PC-03/X-02 修复。
  *
- * 只支持 insert 形态（组织内 9 个插件全是此形态）；遇到复杂 patch
- * （- update:/- disable: 混合）按非预期字段/结构报 warning。
+ * 目标：对齐官方 bundle patch（PatchOptions）语义，而不是只认工作区
+ * 简单工具插件的 id/name 两字段：
+ * - 支持 insert / update / disable 三种 section；
+ * - 剥离行内注释（`id: a # comment` → id="a"）；
+ * - `config` 是合法字段（不再标 unexpected-fields），其嵌套子行按缩进归属；
+ * - 只对 insert 形态要求 id（update/disable 也要求 id，但语义不同）；
+ * - 未知顶层 section 报错；条目内未知字段仍给 warning。
+ *
+ * 行级解析（零依赖）：以缩进判断归属层级，注释剥离尊重引号。
  */
 
-import { promises as fs } from 'node:fs'
-import { join } from 'node:path'
-import type { CheckIssue } from './report.ts'
+export interface PatchSection {
+  op: 'insert' | 'update' | 'disable' | 'unknown'
+  entries: PatchEntry[]
+  /** section 级解析错误（不含条目内字段校验）。 */
+  errors: string[]
+}
 
 export interface PatchEntry {
   id: string
   name: string
-  extraFields: string[]
+  fields: string[]
 }
 
-/** 剥离 YAML 标量引号（'x' / "x"）。 */
+/** 剥离行内注释（# 前有空白且不在引号内）。 */
+function stripInlineComment(line: string): string {
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!
+    if (c === "'" && !inDouble) inSingle = !inSingle
+    else if (c === '"' && !inSingle) inDouble = !inDouble
+    else if (c === '#' && !inSingle && !inDouble && (i === 0 || /\s/.test(line[i - 1]!))) {
+      return line.slice(0, i).trimEnd()
+    }
+  }
+  return line.trimEnd()
+}
+
 function stripQuotes(value: string): string {
   const m = /^(['"])(.*)\1$/.exec(value)
   return m ? m[2]! : value
 }
 
-/** 解析 bundle patch 的 insert 列表（极简 YAML 子集：- insert: 下的 - id:/name: 行）。 */
-export function parsePatchInsert(text: string): { entries: PatchEntry[]; errors: string[] } {
-  const entries: PatchEntry[] = []
-  const errors: string[] = []
-  let inInsert = false
-  let current: PatchEntry | undefined
+/** 解析 bundle patch 文本为 sections。 */
+export function parsePatchSections(text: string): PatchSection[] {
+  const sections: PatchSection[] = []
+  let current: PatchSection | undefined
+  let currentEntry: PatchEntry | undefined
+  // 跟踪 config 等嵌套字段的开始缩进，其更深子行全部归属该字段
+  let nestedFieldIndent = -1
+
+  const ensureEntry = (): PatchEntry => {
+    if (!currentEntry) {
+      currentEntry = { id: '', name: '', fields: [] }
+      current?.entries.push(currentEntry)
+    }
+    return currentEntry
+  }
+
   for (const raw of text.split('\n')) {
-    const content = raw.trim()
-    if (content === '' || content.startsWith('#')) continue
-    if (content === '- insert:') { inInsert = true; continue }
-    if (content.startsWith('- ')) {
-      if (!inInsert) {
-        errors.push(`unexpected content outside insert: ${content.slice(0, 40)}`)
-        continue
-      }
-      // 新条目开始；实际格式为 `- id: xxx`（id 与破折号同行）或 `- name: xxx`
-      const entryRe = /^- ([a-zA-Z][\w-]*):\s*(.*)$/
-      const m = entryRe.exec(content)
-      current = { id: '', name: '', extraFields: [] }
-      entries.push(current)
-      if (m) {
-        const value = stripQuotes(m[2])
-        if (m[1] === 'id') current.id = value
-        else if (m[1] === 'name') current.name = value
-        else current.extraFields.push(m[1])
-      } else {
-        errors.push(`unparseable entry line: ${content.slice(0, 40)}`)
-      }
+    const line = stripInlineComment(raw)
+    if (line.trim() === '') continue
+    const indent = line.length - line.trimStart().length
+    const content = line.trim()
+
+    // 顶层 section：`- insert:` / `- update:` / `- disable:`
+    const sectionRe = /^- (insert|update|disable):$/.exec(content)
+    if (sectionRe) {
+      current = { op: sectionRe[1] as PatchSection['op'], entries: [], errors: [] }
+      sections.push(current)
+      currentEntry = undefined
+      nestedFieldIndent = -1
       continue
     }
-    if (!inInsert) {
-      errors.push(`unexpected content outside insert: ${content.slice(0, 40)}`)
+    // 未知顶层条目（如 `- foo:`）→ 记入 unknown section
+    if (indent === 0 && content.startsWith('- ')) {
+      current = { op: 'unknown', entries: [], errors: [`unknown top-level entry: ${content.slice(0, 40)}`] }
+      sections.push(current)
+      currentEntry = undefined
       continue
     }
-    const m = /^([a-zA-Z][\w-]*):\s*(.*)$/.exec(content)
-    if (!m) { errors.push(`unparseable line: ${content.slice(0, 40)}`); continue }
-    const [, key, value] = m
-    if (current === undefined) { errors.push(`field outside entry: ${key}`); continue }
-    if (key === 'id') current.id = stripQuotes(value)
-    else if (key === 'name') current.name = stripQuotes(value)
-    else current.extraFields.push(key)
+    if (!current) {
+      sections.push({ op: 'unknown', entries: [], errors: [`content before any section: ${content.slice(0, 40)}`] })
+      current = sections[sections.length - 1]
+      continue
+    }
+
+    // 条目开始：`- id: x` / `- name: x` / `- config:`
+    const entryRe = /^- ([a-zA-Z][\w-]*):\s*(.*)$/.exec(content)
+    if (entryRe) {
+      currentEntry = { id: '', name: '', fields: [] }
+      current.entries.push(currentEntry)
+      const key = entryRe[1]!
+      const value = stripQuotes(entryRe[2]!)
+      if (key === 'id') currentEntry.id = value
+      else if (key === 'name') currentEntry.name = value
+      else currentEntry.fields.push(key)
+      nestedFieldIndent = value === '' ? indent + 2 : -1 // 空值字段可能带嵌套子行
+      continue
+    }
+
+    // 字段行
+    const fieldRe = /^([a-zA-Z][\w-]*):\s*(.*)$/.exec(content)
+    if (!fieldRe) {
+      current.errors.push(`unparseable line: ${content.slice(0, 40)}`)
+      continue
+    }
+    // 嵌套字段（比当前字段更深的缩进）→ 属于 config 等嵌套，不单独解析
+    if (nestedFieldIndent >= 0 && indent > nestedFieldIndent) {
+      continue
+    }
+    const entry = ensureEntry()
+    const key = fieldRe[1]!
+    if (key === 'id') entry.id = stripQuotes(fieldRe[2]!)
+    else if (key === 'name') entry.name = stripQuotes(fieldRe[2]!)
+    else entry.fields.push(key)
+    nestedFieldIndent = fieldRe[2]!.trim() === '' ? indent + 2 : -1
   }
-  for (const e of entries) {
-    if (e.id === '') errors.push('entry missing id')
-    if (e.name === '') errors.push(`entry ${e.id || '(unnamed)'} missing name`)
+
+  for (const s of sections) {
+    for (const e of s.entries) {
+      if (e.id === '') s.errors.push('entry missing id')
+    }
   }
-  return { entries, errors }
+  return sections
 }
 
-/** 检查插件仓库的 cordis.patch.yml（bundle 形态）。 */
-export async function checkPatch(dir: string, pkgName: string | null): Promise<CheckIssue[]> {
-  const issues: CheckIssue[] = []
-  const patchPath = join(dir, 'cordis.patch.yml')
+/** 兼容旧 API：取所有 insert entries。 */
+export function parsePatchInsert(text: string): { entries: PatchEntry[]; errors: string[] } {
+  const sections = parsePatchSections(text)
+  const insert = sections.find(s => s.op === 'insert')
+  return {
+    entries: insert?.entries ?? [],
+    errors: [...(insert?.errors ?? []), ...sections.filter(s => s.op !== 'insert').flatMap(s => s.errors)],
+  }
+}
+
+/** 检查插件仓库的 cordis.patch.yml（bundle 形态；审查 X-02：config 等官方字段合法）。 */
+export async function checkPatch(dir: string, kind: 'bundle' | 'tool-bundle', pkgName: string | undefined): Promise<import('./report.ts').CheckIssue[]> {
+  const issues: import('./report.ts').CheckIssue[] = []
   let text: string
   try {
-    text = await fs.readFile(patchPath, 'utf8')
+    text = await import('node:fs/promises').then(fs => fs.readFile(join(dir, 'cordis.patch.yml'), 'utf8'))
   } catch {
     return issues // no-patch 已在 manifest 检查中报告
   }
-  const { entries, errors } = parsePatchInsert(text)
-  if (errors.length > 0) {
-    issues.push({ code: 'malformed-patch', detail: errors.slice(0, 3).join('; ') })
-  }
-  if (entries.length === 0 && errors.length === 0) {
-    issues.push({ code: 'malformed-patch', detail: '没有解析到任何 insert 条目' })
-  }
-  // name 与 package.json 一致
-  if (pkgName) {
-    for (const e of entries) {
-      if (e.name !== '' && e.name !== pkgName) {
-        issues.push({ code: 'patch-name-mismatch', detail: `patch name "${e.name}" 与 package.json name "${pkgName}" 不一致` })
+  const sections = parsePatchSections(text)
+  const insert = sections.find(s => s.op === 'insert')
+
+  if (!insert) {
+    issues.push({ code: 'malformed-patch', detail: '没有解析到 insert section（bundle patch 需要至少一个 - insert:）' })
+  } else {
+    if (insert.errors.length > 0) {
+      issues.push({ code: 'malformed-patch', detail: insert.errors.slice(0, 3).join('; ') })
+    }
+    // row id 唯一
+    const seen = new Set<string>()
+    for (const e of insert.entries) {
+      if (e.id !== '') {
+        if (seen.has(e.id)) issues.push({ code: 'duplicate-row-id', detail: `重复 row id: ${e.id}` })
+        seen.add(e.id)
+      }
+    }
+    // tool-bundle：patch name 与包名一致（PC-02：bundle 可插入多个包，不强制一致）
+    if (kind === 'tool-bundle' && pkgName) {
+      for (const e of insert.entries) {
+        if (e.name !== '' && e.name !== pkgName) {
+          issues.push({ code: 'patch-name-mismatch', detail: `patch name "${e.name}" 与 package.json name "${pkgName}" 不一致` })
+        }
+      }
+    }
+    // 未知字段（config/name/id 之外）→ warning；config 合法不再报警（X-02）
+    for (const e of insert.entries) {
+      for (const f of e.fields) {
+        if (f !== 'config') {
+          issues.push({ code: 'unexpected-fields', detail: `条目 ${e.id || '(unnamed)'} 含非预期字段: ${f}` })
+        }
       }
     }
   }
-  // row id 唯一
-  const seen = new Set<string>()
-  for (const e of entries) {
-    if (e.id !== '') {
-      if (seen.has(e.id)) issues.push({ code: 'duplicate-row-id', detail: `重复 row id: ${e.id}` })
-      seen.add(e.id)
+
+  // update/disable section 结构错误
+  for (const s of sections) {
+    if ((s.op === 'update' || s.op === 'disable') && s.errors.length > 0) {
+      issues.push({ code: 'malformed-patch', detail: `${s.op} section: ${s.errors.slice(0, 2).join('; ')}` })
+    }
+    if (s.op === 'unknown' && s.errors.length > 0) {
+      issues.push({ code: 'malformed-patch', detail: s.errors.slice(0, 2).join('; ') })
     }
   }
-  // 非预期字段（config 等嵌套）→ warning
-  for (const e of entries) {
-    for (const f of e.extraFields) {
-      issues.push({ code: 'unexpected-fields', detail: `条目 ${e.id || '(unnamed)'} 含非预期字段: ${f}` })
-    }
-  }
+
   return issues
 }

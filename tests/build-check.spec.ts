@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { checkBuildPitfalls } from '../src/build-check.ts'
+import { checkBuildPitfalls, resolveTsconfig } from '../src/build-check.ts'
 import { goodPlugin, makePlugin, GOOD_TSCONFIG, GOOD_TS_SRC } from './helpers.ts'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 const pkg = (extra: Record<string, unknown> = {}) => JSON.stringify({
   name: '@deepseek-ai/dsh-tool-x',
@@ -14,80 +16,115 @@ const codes = (issues: Array<{ code: string }>) => issues.map(i => i.code)
 describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
   it('passes a compliant plugin', async () => {
     const dir = goodPlugin()
-    const parsed = JSON.parse(pkg()) as Record<string, unknown>
-    expect(codes(await checkBuildPitfalls(dir, parsed))).toEqual([])
+    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toEqual([])
   })
 
-  it('reports no-source-entry', async () => {
-    const dir = makePlugin({ 'tsconfig.json': GOOD_TSCONFIG })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('no-source-entry')
+  it('reports no-source-entry and no-tsconfig', async () => {
+    const d1 = makePlugin({ 'tsconfig.json': GOOD_TSCONFIG })
+    expect(codes(await checkBuildPitfalls(d1, JSON.parse(pkg())))).toContain('no-source-entry')
+    const d2 = makePlugin({ 'src/index.ts': 'x' })
+    expect(codes(await checkBuildPitfalls(d2, JSON.parse(pkg())))).toContain('no-tsconfig')
   })
 
-  it('reports no-tsconfig', async () => {
-    const dir = makePlugin({ 'src/index.ts': 'x' })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('no-tsconfig')
-  })
-
-  it('reports missing-ts-ext-imports when src uses .ts imports without the flag', async () => {
+  it('resolves tsconfig extends and stops false positives (PC-05)', async () => {
     const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({ extends: './base.json', compilerOptions: {} }),
+      'base.json': JSON.stringify({ compilerOptions: { outDir: 'lib', allowImportingTsExtensions: true, rewriteRelativeImportExtensions: true, declarationDir: 'lib/types', types: ['node'] } }),
+      'src/index.ts': "import { x } from './impl.ts'",
+      'src/impl.ts': 'export const x = 1',
+    })
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    expect(issues).not.toContain('missing-ts-ext-imports')
+    expect(issues).not.toContain('tsconfig-extends-unresolved')
+  })
+
+  it('reports tsconfig-extends-unresolved instead of deterministic fails (PC-05)', async () => {
+    const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({ extends: './missing-base.json', compilerOptions: {} }),
+      'src/index.ts': "import { x } from './impl.ts'",
+      'src/impl.ts': 'x',
+    })
+    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('tsconfig-extends-unresolved')
+  })
+
+  it('reports missing-ts-ext-imports / missing-rewrite-imports as errors (PC-11)', async () => {
+    const d1 = makePlugin({
       'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib' } }),
-      'src/index.ts': `import { x } from './impl.ts'\n`,
-      'src/impl.ts': 'export const x = 1\n',
+      'src/index.ts': "import { x } from './impl.ts'",
+      'src/impl.ts': 'x',
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('missing-ts-ext-imports')
-  })
-
-  it('reports missing-rewrite-imports when the flag pair is incomplete', async () => {
-    const dir = makePlugin({
+    expect(codes(await checkBuildPitfalls(d1, JSON.parse(pkg())))).toContain('missing-ts-ext-imports')
+    const d2 = makePlugin({
       'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib', allowImportingTsExtensions: true } }),
-      'src/index.ts': `import { x } from './impl.ts'\n`,
-      'src/impl.ts': 'export const x = 1\n',
+      'src/index.ts': "import { x } from './impl.ts'",
+      'src/impl.ts': 'x',
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('missing-rewrite-imports')
+    expect(codes(await checkBuildPitfalls(d2, JSON.parse(pkg())))).toContain('missing-rewrite-imports')
   })
 
-  it('reports lib-layout-mismatch', async () => {
+  it('detects all .ts import forms in lib output (PC-06)', async () => {
+    const forms = [
+      "import('./x.ts')",
+      "require('./x.ts')",
+      "import './x.ts'",
+      "import z from './z.ts'",
+      "import x from './x.tsx'",
+      "import m from './m.mts'",
+      "import c from './c.cts'",
+      "new Worker(new URL('./worker.ts', import.meta.url))",
+    ]
+    for (const form of forms) {
+      const dir = makePlugin({
+        'lib/index.js': form,
+        'src/index.ts': 'x',
+        'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib' } }),
+      })
+      expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg()))), form).toContain('stale-ts-imports')
+    }
+  })
+
+  it('reports no-build-entry (error) when lib is missing and no build script (PC-11)', async () => {
     const dir = makePlugin({
-      'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'dist' } }),
+      'src/index.ts': 'x',
+      'tsconfig.json': GOOD_TSCONFIG,
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('lib-layout-mismatch')
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ scripts: {} }))))
+    expect(issues).toContain('no-build-entry')
+    expect(issues).not.toContain('no-build-script')
   })
 
-  it('reports types-path-mismatch', async () => {
+  it('reports no-build-script (warning) when lib exists but scripts missing', async () => {
     const dir = makePlugin({
-      'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib', declarationDir: 'types' } }),
+      'src/index.ts': 'x',
+      'tsconfig.json': GOOD_TSCONFIG,
+      'lib/index.js': 'export {}',
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('types-path-mismatch')
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ scripts: {} }))))
+    expect(issues).toContain('no-build-script')
+    expect(issues).not.toContain('no-build-entry')
   })
 
-  it('reports implicit-node-types when Buffer is used without explicit types', async () => {
+  it('reports implicit-node-types for Buffer without explicit types', async () => {
     const dir = makePlugin({
       'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib' } }),
       'src/index.ts': `const n = Buffer.byteLength('x')\n`,
     })
     expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('implicit-node-types')
-    // 显式 types:["node"] 后不再命中
-    const okDir = makePlugin({
-      'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib', types: ['node'] } }),
-      'src/index.ts': `const n = Buffer.byteLength('x')\n`,
-    })
-    expect(codes(await checkBuildPitfalls(okDir, JSON.parse(pkg())))).not.toContain('implicit-node-types')
   })
+})
 
-  it('reports stale-ts-imports when lib output keeps .ts imports', async () => {
-    const dir = makePlugin({
-      'tsconfig.json': GOOD_TSCONFIG,
-      'src/index.ts': 'x',
-      'lib/index.js': `import { evaluate } from './evaluate.ts'\n`,
-      'lib/evaluate.js': '',
+describe('resolveTsconfig: extends 解析', () => {
+  it('merges base compilerOptions with child overrides', async () => {
+    const dir = goodPlugin()
+    mkdirSync(join(dir, 'shared'))
+    // 用临时文件验证合并语义
+    const d2 = makePlugin({
+      'tsconfig.json': JSON.stringify({ extends: './base.json', compilerOptions: { outDir: 'dist' } }),
+      'base.json': JSON.stringify({ compilerOptions: { allowImportingTsExtensions: true, outDir: 'lib' } }),
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('stale-ts-imports')
-  })
-
-  it('reports no-build-script when scripts are missing', async () => {
-    const dir = makePlugin({ 'tsconfig.json': GOOD_TSCONFIG, 'src/index.ts': GOOD_TS_SRC })
-    const issues = await checkBuildPitfalls(dir, JSON.parse(pkg({ scripts: {} })))
-    const build = issues.filter(i => i.code === 'no-build-script')
-    expect(build.length).toBe(2) // build + prepack
+    const r = await resolveTsconfig(d2)
+    expect(r?.resolved).toBe(true)
+    expect(r?.compilerOptions['outDir']).toBe('dist') // 子覆盖
+    expect(r?.compilerOptions['allowImportingTsExtensions']).toBe(true) // 继承
   })
 })

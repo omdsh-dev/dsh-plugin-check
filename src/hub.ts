@@ -1,16 +1,14 @@
 /**
- * §3.4 hub 收录状态检查 —— 优先读本地 hub catalog（离线、快），
- * gh API 作为 fallback；任何失败静默降级为 'skipped'（报告如实标注）。
- *
- * 与实施文档的偏差（审查修正）：不检查 `marisa-plugin` topic——组织内
- * 9 个插件实际都没打 topic（`gh api .../topics` 全空），会误报全部基线插件；
- * hub 收录以 catalog 登记为准。
+ * §3.4 hub 收录状态检查 v2 —— 审查 PC-09 修复：
+ * 仓库身份优先从 git remote 解析（owner/repo），失败再回退目录 basename；
+ * not-in-hub 的修复建议按形态推荐分类。
  */
 
 import { promises as fs } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
+import type { RepoKind } from './form.ts'
 import type { CheckIssue } from './report.ts'
 
 export type HubStatus = 'in-hub' | 'not-in-hub' | 'skipped'
@@ -40,7 +38,7 @@ async function readLocalCatalog(): Promise<{ repos: Array<{ name: string }> } | 
   return null
 }
 
-/** 经 gh CLI 读取远端 hub catalog（离线优先失败后调用；失败返回 null）。 */
+/** 经 gh CLI 读取远端 hub catalog（失败返回 null）。 */
 async function fetchHubCatalogViaGh(): Promise<{ repos: Array<{ name: string }> } | null> {
   return new Promise(resolve => {
     execFile('gh', ['api', 'repos/dsh-external/hub/contents/catalog.json', '-q', '.content'], {
@@ -60,8 +58,39 @@ async function fetchHubCatalogViaGh(): Promise<{ repos: Array<{ name: string }> 
   })
 }
 
+/** 从 git remote URL 提取仓库名；失败返回 null。 */
+export async function repoNameFromGitRemote(dir: string): Promise<string | null> {
+  return new Promise(resolve => {
+    execFile('git', ['-C', dir, 'remote', 'get-url', 'origin'], { timeout: 5000, windowsHide: true }, (error, stdout) => {
+      if (error) { resolve(null); return }
+      const url = stdout.trim()
+      // git@github.com:owner/repo.git | https://github.com/owner/repo.git | owner/repo
+      const m = /(?:github\.com[:/])([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url)
+        ?? /^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url)
+      resolve(m ? m[2]! : null)
+    })
+  })
+}
+
+/** 仓库身份：git remote → basename 回退。 */
+export async function resolveRepoIdentity(dir: string): Promise<string> {
+  const fromRemote = await repoNameFromGitRemote(dir)
+  return fromRemote ?? basename(dir)
+}
+
+/** 按形态推荐 hub 分类。 */
+export function recommendedCategory(kind: RepoKind): string {
+  switch (kind) {
+    case 'collection': return 'collection'
+    case 'skill': return 'skill'
+    case 'registry': return 'plugin'
+    case 'bundle': case 'tool-bundle': return 'plugin'
+    default: return '（按仓库实际形态登记正确分类）'
+  }
+}
+
 /** 检查仓库是否被 hub catalog 收录；网络/工具不可用时返回 'skipped'。 */
-export async function checkHubStatus(repoName: string): Promise<{ status: HubStatus; issues: CheckIssue[] }> {
+export async function checkHubStatus(repoName: string, kind: RepoKind): Promise<{ status: HubStatus; issues: CheckIssue[] }> {
   const issues: CheckIssue[] = []
   let catalog = await readLocalCatalog()
   if (!catalog) {
@@ -73,7 +102,10 @@ export async function checkHubStatus(repoName: string): Promise<{ status: HubSta
   }
   const found = catalog.repos.some(r => r.name === repoName)
   if (!found) {
-    issues.push({ code: 'not-in-hub', detail: `仓库 ${repoName} 未收录进 hub catalog（catalog.source.json 登记或等自动同步）` })
+    issues.push({
+      code: 'not-in-hub',
+      detail: `仓库 ${repoName} 未收录进 hub catalog（catalog.source.json 登记为 ${recommendedCategory(kind)}，或等自动同步）`,
+    })
     return { status: 'not-in-hub', issues }
   }
   return { status: 'in-hub', issues }

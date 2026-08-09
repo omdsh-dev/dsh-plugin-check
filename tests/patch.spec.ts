@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { parsePatchInsert, checkPatch } from '../src/patch.ts'
+import { parsePatchSections, parsePatchInsert, checkPatch } from '../src/patch.ts'
 import { goodPlugin, makePlugin } from './helpers.ts'
 
-describe('parsePatchInsert: 极简 YAML 行解析', () => {
-  it('parses a valid insert list', () => {
+describe('parsePatchSections: 行级解析 v2（审查 PC-03）', () => {
+  it('parses a valid insert list with inline ids', () => {
     const { entries, errors } = parsePatchInsert(`# comment
 - insert:
     - id: tool-a
@@ -12,49 +12,72 @@ describe('parsePatchInsert: 极简 YAML 行解析', () => {
       name: '@deepseek-ai/b'
 `)
     expect(errors).toEqual([])
-    expect(entries).toEqual([
-      { id: 'tool-a', name: '@deepseek-ai/a', extraFields: [] },
-      { id: 'tool-b', name: '@deepseek-ai/b', extraFields: [] },
-    ])
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({ id: 'tool-a', name: '@deepseek-ai/a' })
+    expect(entries[1]).toMatchObject({ id: 'tool-b', name: '@deepseek-ai/b' })
   })
 
-  it('tolerates comments and blank lines', () => {
-    const { entries, errors } = parsePatchInsert('# head\n\n- insert:\n  # inner\n    - id: x\n      name: y\n')
-    expect(errors).toEqual([])
-    expect(entries).toHaveLength(1)
-    expect(entries[0]).toEqual({ id: 'x', name: 'y', extraFields: [] })
+  it('strips inline comments (PC-03)', () => {
+    const { entries } = parsePatchInsert('- insert:\n    - id: tool-a # comment\n      name: x\n')
+    expect(entries[0]?.id).toBe('tool-a')
   })
 
-  it('reports entries missing id or name', () => {
-    const { errors } = parsePatchInsert('- insert:\n    - name: only-name\n    - id: only-id\n')
+  it('keeps config as a legal field and absorbs nested lines (X-02)', () => {
+    const sections = parsePatchSections(`- insert:
+    - id: tool-x
+      name: '@deepseek-ai/x'
+      config:
+        key: value
+        nested:
+          deep: 1
+`)
+    expect(sections).toHaveLength(1)
+    expect(sections[0]?.op).toBe('insert')
+    expect(sections[0]?.entries[0]?.fields).toContain('config')
+    expect(sections[0]?.errors).toEqual([])
+  })
+
+  it('supports update/disable sections without treating them as malformed (PC-03)', () => {
+    const sections = parsePatchSections(`- insert:
+    - id: a
+      name: '@deepseek-ai/a'
+- update:
+    - id: a
+      config:
+        key: v
+- disable:
+    - id: b
+`)
+    expect(sections.map(s => s.op)).toEqual(['insert', 'update', 'disable'])
+    expect(sections.every(s => s.errors.length === 0)).toBe(true)
+  })
+
+  it('reports entries missing id', () => {
+    const { errors } = parsePatchInsert('- insert:\n    - name: only-name\n')
     expect(errors.join('; ')).toContain('missing id')
-    expect(errors.join('; ')).toContain('missing name')
   })
 
-  it('rejects unexpected top-level content and non-insert entries', () => {
-    const { errors } = parsePatchInsert('- update:\n    - id: x\n')
-    expect(errors.join('; ')).toContain('unexpected content outside insert')
-  })
-
-  it('routes complex fields (config:) to extraFields', () => {
-    const { entries, errors } = parsePatchInsert('- insert:\n    - id: x\n      name: y\n      config:\n        k: v\n')
-    expect(errors).toEqual([])
-    expect(entries[0]?.extraFields).toContain('config')
+  it('reports unknown top-level entries', () => {
+    const sections = parsePatchSections('- foo:\n    - id: x\n')
+    expect(sections[0]?.op).toBe('unknown')
+    expect(sections[0]?.errors.join('; ')).toContain('unknown top-level entry')
   })
 })
 
-describe('checkPatch: 仓库级检查', () => {
-  it('passes a compliant patch', async () => {
+describe('checkPatch: 仓库级检查（kind 感知）', () => {
+  it('passes a compliant tool-bundle patch', async () => {
     const dir = goodPlugin()
-    expect(await checkPatch(dir, '@deepseek-ai/dsh-tool-good')).toEqual([])
+    expect(await checkPatch(dir, 'tool-bundle', '@deepseek-ai/dsh-tool-good')).toEqual([])
   })
 
-  it('reports patch-name-mismatch', async () => {
+  it('reports patch-name-mismatch only for tool-bundle (PC-02: bundle 多包合法)', async () => {
     const dir = makePlugin({
-      'cordis.patch.yml': '- insert:\n    - id: tool-x\n      name: \'@deepseek-ai/other\'\n',
+      'cordis.patch.yml': "- insert:\n    - id: tool-x\n      name: '@deepseek-ai/other'\n",
     })
-    const issues = await checkPatch(dir, '@deepseek-ai/real')
-    expect(issues.map(i => i.code)).toContain('patch-name-mismatch')
+    const toolIssues = await checkPatch(dir, 'tool-bundle', '@deepseek-ai/real')
+    expect(toolIssues.map(i => i.code)).toContain('patch-name-mismatch')
+    const bundleIssues = await checkPatch(dir, 'bundle', '@deepseek-ai/real')
+    expect(bundleIssues.map(i => i.code)).not.toContain('patch-name-mismatch')
   })
 
   it('reports duplicate-row-id', async () => {
@@ -66,18 +89,20 @@ describe('checkPatch: 仓库级检查', () => {
       name: '@deepseek-ai/b'
 `,
     })
-    const issues = await checkPatch(dir, '@deepseek-ai/a')
+    const issues = await checkPatch(dir, 'bundle', '@deepseek-ai/a')
     expect(issues.map(i => i.code)).toContain('duplicate-row-id')
   })
 
   it('reports malformed-patch for structural errors', async () => {
-    const dir = makePlugin({ 'cordis.patch.yml': '- insert:\n    - id: x\n' }) // 缺 name
-    const issues = await checkPatch(dir, '@deepseek-ai/a')
-    expect(issues.map(i => i.code)).toContain('malformed-patch')
+    const dir = makePlugin({ 'cordis.patch.yml': '- insert:\n    - id: x\n' }) // 缺 name 不报错（name 可选）；缺 id 才报
+    const issues = await checkPatch(dir, 'tool-bundle', '@deepseek-ai/a')
+    expect(issues.map(i => i.code)).not.toContain('malformed-patch')
+    const bad = makePlugin({ 'cordis.patch.yml': 'garbage line\n' })
+    expect((await checkPatch(bad, 'bundle', undefined)).map(i => i.code)).toContain('malformed-patch')
   })
 
   it('returns no issues when cordis.patch.yml is absent (reported by manifest)', async () => {
     const dir = makePlugin({ 'package.json': '{}' })
-    expect(await checkPatch(dir, '@deepseek-ai/a')).toEqual([])
+    expect(await checkPatch(dir, 'bundle', undefined)).toEqual([])
   })
 })

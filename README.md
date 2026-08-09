@@ -31,9 +31,9 @@ DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / 
 |---|---|
 | `check` | 检查单个插件仓库目录 → 合规报告（verdict/errors/warnings/suggestions） |
 | `scan` | 扫描父目录下所有 `dsh-*` 插件仓库（有 package.json 者）→ 汇总报告 |
-| `schema` | 输出全部检测项清单与判定标准（22 项，供模型/人核对） |
+| `schema` | 输出全部检测项清单与判定标准（按形态适用的检测项矩阵，供模型/人核对） |
 
-## 检测项（22 项）
+## 形态识别与检测项（按形态适用，29 项）
 
 | 类别 | error | warning |
 |---|---|---|
@@ -43,12 +43,14 @@ DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / 
 | hub 收录 | — | not-in-hub（hub-skipped 为 info） |
 
 `verdict`：0 error → pass；有 error → fail；仅 warning → warn。
+`kind`：registry / skill / collection / tool-bundle / bundle / infra / unknown——按形态套用不同检查集（X-01 共享矩阵）。
+`checks`：固定检查项的执行结果（total/passed/failed/warned/skipped），不再是 issue 数。
 
 ## 示例
 
 ```
 plugin_check { action: "check", path: "C:/Users/admin/Desktop/dshext/dsh-tool-csv" }
-  → {"repo":"dsh-tool-csv","verdict":"pass","errors":[],"warnings":[],...}
+  → {"repo":"dsh-tool-csv","kind":"tool-bundle","verdict":"pass","checks":{"total":24,"passed":24,...}}
 
 plugin_check { action: "scan", path: "C:/Users/admin/Desktop/dshext" }
   → {"root":"...","scanned":11,"reports":[...]}   # dsh-my-rsi 等不合规仓库会带 error+suggestions

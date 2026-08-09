@@ -1,24 +1,28 @@
 /**
- * DSH 插件健康检查插件。
+ * DSH 插件健康检查插件 v2 —— 审查 PC-02/X-01 修复。
  *
- * 注册 `plugin_check` 工具：扫描插件仓库，诊断清单协议 / patch 格式 /
- * 构建陷阱 / hub 收录状态，输出合规报告与修复建议。
- * 接入方式：在 cordis.yml 追加：
- *   - id: tool-plugin-check
- *     name: '@deepseek-ai/dsh-plugin-check'
+ * 按项目形态（registry / skill / collection / bundle / tool-bundle / unknown）
+ * 分流检查规则，不再把 TypeScript 工具 bundle 模板当作唯一合规协议：
+ * - registry → dsh.plugin.json 契约校验；
+ * - skill → SKILL.md frontmatter 基本校验；
+ * - collection → catalog.json 结构校验；
+ * - bundle / tool-bundle → 清单 + patch + 构建陷阱；
+ * - unknown → 明确标注 unsupported，不强行 fail。
  *
- * 安全边界：**只读**（不修改、不构建被检查仓库）；path 需为本地目录；
- * hub 检查离线优先、失败静默降级（skipped）；零业务依赖（仅 node 内置模块）。
+ * 安全边界：只读；路径 containment（防逃逸/symlink）；资源预算；
+ * hub 检查离线优先、失败静默降级。
  */
 
 import type { Context } from 'cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { promises as fs } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
+import { detectKind, type RepoKind } from './form.ts'
 import { checkManifest } from './manifest.ts'
 import { checkPatch } from './patch.ts'
 import { checkBuildPitfalls } from './build-check.ts'
-import { checkHubStatus } from './hub.ts'
+import { checkRegistry } from './registry.ts'
+import { checkHubStatus, resolveRepoIdentity } from './hub.ts'
 import { buildRepoReport, CHECK_SCHEMA, type CheckIssue, type RepoReport } from './report.ts'
 
 export const name = '@deepseek-ai/dsh-plugin-check'
@@ -30,32 +34,88 @@ interface PluginCheckArgs {
   strict?: unknown
 }
 
-/** 检查单个插件仓库目录。 */
-export async function checkRepo(dir: string, strict: boolean): Promise<RepoReport> {
-  const repo = basename(dir)
+/** skill 形态基本校验：SKILL.md 存在且有 name/description frontmatter。 */
+async function checkSkill(dir: string): Promise<CheckIssue[]> {
   const issues: CheckIssue[] = []
-
-  const { issues: manifestIssues, pkg } = await checkManifest(dir)
-  issues.push(...manifestIssues)
-
-  const pkgName = (pkg?.['name'] as string | undefined) ?? null
-
-  if (pkgName === null) {
-    // 无 package.json：无法继续 patch/构建检查，直接出报告
-    return buildRepoReport(repo, dir, issues, strict)
+  try {
+    const text = await fs.readFile(join(dir, 'SKILL.md'), 'utf8')
+    const m = /^---\n([\s\S]*?)\n---/.exec(text)
+    if (!m) {
+      issues.push({ code: 'malformed-skill', detail: 'SKILL.md 缺 frontmatter（--- 包裹的 YAML）' })
+      return issues
+    }
+    const fm = m[1]!
+    if (!/^name:\s*\S+/m.test(fm)) issues.push({ code: 'malformed-skill', detail: 'frontmatter 缺 name' })
+    if (!/^description:\s*\S+/m.test(fm)) issues.push({ code: 'malformed-skill', detail: 'frontmatter 缺 description' })
+  } catch {
+    issues.push({ code: 'malformed-skill', detail: 'SKILL.md 缺失' })
   }
-
-  issues.push(...await checkPatch(dir, pkgName))
-  issues.push(...await checkBuildPitfalls(dir, pkg))
-
-  // hub 状态（离线/失败降级）
-  const hub = await checkHubStatus(repo)
-  issues.push(...hub.issues)
-
-  return buildRepoReport(repo, dir, issues, strict)
+  return issues
 }
 
-/** 扫描目录下所有 dsh-* 插件仓库并逐个检查。 */
+/** collection 形态基本校验：catalog.json 的 collection/plugins 结构。 */
+async function checkCollection(dir: string): Promise<CheckIssue[]> {
+  const issues: CheckIssue[] = []
+  try {
+    const parsed = JSON.parse(await fs.readFile(join(dir, 'catalog.json'), 'utf8')) as Record<string, unknown>
+    if (typeof parsed['collection'] !== 'string') {
+      issues.push({ code: 'malformed-collection', detail: 'catalog.json 缺 collection 字段' })
+    }
+    if (!Array.isArray(parsed['plugins'])) {
+      issues.push({ code: 'malformed-collection', detail: 'catalog.json 缺 plugins 数组' })
+    }
+  } catch {
+    issues.push({ code: 'malformed-collection', detail: 'catalog.json 缺失或非法 JSON' })
+  }
+  return issues
+}
+
+/** 检查单个仓库（按形态分流）。 */
+export async function checkRepo(dir: string, strict: boolean): Promise<RepoReport> {
+  const kind: RepoKind = await detectKind(dir)
+  const repo = await resolveRepoIdentity(dir)
+  const issues: CheckIssue[] = []
+
+  switch (kind) {
+    case 'registry': {
+      issues.push(...await checkRegistry(dir))
+      break
+    }
+    case 'skill': {
+      issues.push(...await checkSkill(dir))
+      break
+    }
+    case 'collection': {
+      issues.push(...await checkCollection(dir))
+      break
+    }
+    case 'tool-bundle':
+    case 'bundle': {
+      const { issues: manifestIssues, pkg } = await checkManifest(dir)
+      issues.push(...manifestIssues)
+      if (pkg !== null) {
+        issues.push(...await checkPatch(dir, kind, pkg['name'] as string | undefined))
+        issues.push(...await checkBuildPitfalls(dir, pkg))
+      }
+      break
+    }
+    case 'unknown':
+    case 'infra': {
+      issues.push({ code: 'unsupported-kind', detail: `仓库形态为 ${kind === 'infra' ? 'infra（多包/基础设施，无 bundle 入口）' : 'unknown（无法识别）'}——已跳过详细检查` })
+      break
+    }
+  }
+
+  // hub 状态（registry/skill/collection/bundle 都查；unknown/infra 跳过）
+  if (kind !== 'unknown' && kind !== 'infra') {
+    const hub = await checkHubStatus(repo, kind)
+    issues.push(...hub.issues)
+  }
+
+  return buildRepoReport(repo, dir, kind, issues, strict)
+}
+
+/** 扫描目录下所有 dsh-* 插件仓库并逐个检查（lstat 跳过 symlink，仓库数预算）。 */
 export async function scanDir(parent: string, strict: boolean): Promise<{ root: string; scanned: number; reports: RepoReport[] }> {
   const reports: RepoReport[] = []
   let entries: string[] = []
@@ -64,17 +124,20 @@ export async function scanDir(parent: string, strict: boolean): Promise<{ root: 
   } catch {
     throw new Error(`plugin_check: cannot read directory: ${parent}`)
   }
+  const MAX_REPOS = 50
   for (const e of entries) {
+    if (reports.length >= MAX_REPOS) break
     if (!e.startsWith('dsh-')) continue
     const full = join(parent, e)
-    let stat
-    try { stat = await fs.stat(full) } catch { continue }
-    if (!stat.isDirectory()) continue
-    try {
-      await fs.access(join(full, 'package.json'))
-    } catch {
-      continue // 无 package.json 的不算插件仓库
+    let st
+    try { st = await fs.lstat(full) } catch { continue }
+    if (!st.isDirectory() || st.isSymbolicLink()) continue
+    // 有 package.json 或 dsh.plugin.json 或 SKILL.md 或 catalog.json 才算项目
+    let marker = false
+    for (const m of ['package.json', 'dsh.plugin.json', 'SKILL.md', 'catalog.json']) {
+      try { await fs.access(join(full, m)); marker = true; break } catch { /* 继续 */ }
     }
+    if (!marker) continue
     reports.push(await checkRepo(full, strict))
   }
   return { root: parent, scanned: reports.length, reports }
@@ -90,7 +153,7 @@ function runAction(args: PluginCheckArgs): Promise<string> {
     case 'scan':
       return scanDir(target, strict).then(r => JSON.stringify(r))
     case 'schema':
-      return Promise.resolve(JSON.stringify(CHECK_SCHEMA))
+      return Promise.resolve(JSON.stringify(CHECK_SCHEMA.map(({ code, severity, description, appliesTo }) => ({ code, severity, description, appliesTo }))))
     default:
       return Promise.reject(new Error(`plugin_check: unknown action "${args.action}"`))
   }
@@ -100,12 +163,11 @@ export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'plugin_check',
     description:
-      'Diagnose a dsh plugin repository (manifest protocol, cordis.patch.yml format, ' +
-      'build pitfalls, hub registration) and produce a compliance report with fixes. ' +
-      'Actions: check (single repo directory), scan (all dsh-* repos under a parent ' +
-      'directory), schema (list of check items). Read-only: never modifies or builds ' +
-      'the checked repository. path defaults to the current working directory; ' +
-      'strict=true promotes warnings to errors in the verdict.',
+      'Diagnose a dsh plugin repository by form (registry / skill / collection / bundle / tool-bundle): ' +
+      'manifest protocol, dsh.plugin.json contract, cordis.patch.yml format, build pitfalls, hub registration. ' +
+      'Actions: check (single repo directory), scan (all dsh-* projects under a parent directory), ' +
+      'schema (check items with per-form applicability). Read-only: never modifies or builds the checked ' +
+      'repository. path defaults to the current working directory; strict=true promotes warnings to errors.',
     parameters: {
       action: {
         type: 'string',

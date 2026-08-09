@@ -1,53 +1,113 @@
 /**
- * §3.3 构建陷阱检查 —— 静态扫描，不执行 tsc：
- * tsconfig 三件套、lib 布局一致性、src/lib 的 `.ts` 相对导入残留、
- * node types 显式性、build/prepack 脚本（发布门禁）。
+ * §3.3 构建陷阱检查 v2 —— 审查 PC-05/PC-06/PC-08/PC-11 修复。
+ *
+ * - tsconfig `extends` 递归解析（共享 base 模式不再误报；解析失败标 skipped）；
+ * - 导入扫描覆盖 from / import() / require() / 副作用 import / .tsx/.mts/.cts；
+ *   lib 额外扫描 `new URL('./x.ts')`（worker 入口残留）；
+ * - 文件收集带资源预算（文件数/总字节）且 lstat 拒绝 symlink；
+ * - 动态严重度：src 用 .ts 导入 + 缺 rewrite → error（确定性运行时崩溃）；
+ *   lib 缺失 + 无 build 脚本 → error（clean checkout 无入口）。
  */
 
 import { promises as fs } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { collectTextsBounded } from './paths.ts'
 import type { CheckIssue } from './report.ts'
 
-const TS_RELATIVE_IMPORT_RE = /from\s+['"]\.\.?\/[^'"]+\.ts['"]/
+/** 相对 .ts 系导入：from / import() / require() / 副作用 import。 */
+const TS_IMPORT_RE = /(?:(?:from|import)\s+|import\s*\(|require\s*\()['"]((?:\.\.?\/)[^'"]+\.(?:ts|tsx|mts|cts))['"]/g
+/** lib 产物额外检查：worker URL 等 new URL('.ts') 残留。 */
+const TS_URL_RE = /new URL\s*\(\s*['"]((?:\.\.?\/)[^'"]+\.(?:ts|tsx|mts|cts))['"]/g
 
-/** 收集目录下全部 .ts/.js 文件内容（深度 ≤3，跳过 node_modules）。 */
-async function collectTexts(dir: string, depth: number, maxDepth: number, ext: 'ts' | 'js'): Promise<string[]> {
-  const out: string[] = []
-  if (depth > maxDepth) return out
-  let entries: string[] = []
-  try {
-    entries = await fs.readdir(dir)
-  } catch {
-    return out
+export interface ResolvedTsconfig {
+  compilerOptions: Record<string, unknown>
+  /** extends 链是否全部解析成功。 */
+  resolved: boolean
+  /** 解析失败原因（resolved=false 时）。 */
+  skipReason?: string
+}
+
+const EXTENDS_MAX_DEPTH = 5
+
+/** 递归解析 tsconfig（extends 相对文件路径；深度上限；失败返回 resolved:false）。 */
+export async function resolveTsconfig(dir: string): Promise<ResolvedTsconfig | null> {
+  const read = async (filePath: string, depth: number): Promise<{ opts: Record<string, unknown>; ok: boolean; reason?: string }> => {
+    if (depth > EXTENDS_MAX_DEPTH) return { opts: {}, ok: false, reason: `extends 深度超过 ${EXTENDS_MAX_DEPTH}` }
+    let raw: string
+    try {
+      raw = await fs.readFile(filePath, 'utf8')
+    } catch {
+      return { opts: {}, ok: false, reason: `extends 目标不可读: ${filePath}` }
+    }
+    let cfg: Record<string, unknown>
+    try {
+      cfg = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      return { opts: {}, ok: false, reason: `extends 目标非法 JSON: ${filePath}` }
+    }
+    const opts: Record<string, unknown> = {}
+    const ext = cfg['extends']
+    if (typeof ext === 'string') {
+      // 仅支持相对路径 extends（npm 包形式的 extends 无法离线解析 → skipped）
+      if (ext.startsWith('.')) {
+        const parent = resolve(filePath, '..', ext)
+        const r = await read(parent, depth + 1)
+        if (!r.ok) return r
+        Object.assign(opts, r.opts)
+      } else {
+        return { opts: {}, ok: false, reason: `无法离线解析包形式 extends: ${ext}` }
+      }
+    }
+    Object.assign(opts, (cfg['compilerOptions'] ?? {}) as Record<string, unknown>)
+    return { opts, ok: true }
   }
-  for (const e of entries) {
-    if (e === 'node_modules' || e.startsWith('.')) continue
-    const full = join(dir, e)
-    let stat
-    try { stat = await fs.stat(full) } catch { continue }
-    if (stat.isDirectory()) {
-      out.push(...await collectTexts(full, depth + 1, maxDepth, ext))
-    } else if (e.endsWith(`.${ext}`)) {
-      try { out.push(await fs.readFile(full, 'utf8')) } catch { /* 跳过 */ }
+
+  try {
+    await fs.access(join(dir, 'tsconfig.json'))
+  } catch {
+    return null // 无 tsconfig：调用方报 no-tsconfig
+  }
+  const r = await read(join(dir, 'tsconfig.json'), 0)
+  if (!r.ok) return { compilerOptions: {}, resolved: false, skipReason: r.reason }
+  return { compilerOptions: r.opts, resolved: true }
+}
+
+function hasTsImport(texts: string[]): boolean {
+  return codeLines(texts).some(t => {
+    TS_IMPORT_RE.lastIndex = 0
+    return TS_IMPORT_RE.test(t)
+  })
+}
+
+function hasWorkerTsUrl(texts: string[]): boolean {
+  return codeLines(texts).some(t => {
+    TS_URL_RE.lastIndex = 0
+    return TS_URL_RE.test(t)
+  })
+}
+
+/** 抽取非注释行（`//`、`/*`、`*` 开头），避免注释里的模式串误报。 */
+function codeLines(texts: string[]): string[] {
+  const out: string[] = []
+  for (const text of texts) {
+    for (const line of text.split('\n')) {
+      const t = line.trim()
+      if (t.startsWith('//') || t.startsWith('/*') || t.startsWith('*')) continue
+      out.push(line)
     }
   }
   return out
-}
-
-function hasTsRelativeImport(texts: string[]): boolean {
-  return texts.some(t => TS_RELATIVE_IMPORT_RE.test(t))
 }
 
 function usesBufferOrNode(texts: string[]): boolean {
   return texts.some(t => /Buffer\./.test(t) || /\bfrom ['"]node:/.test(t))
 }
 
-/** 静态构建陷阱检查。 */
+/** 静态构建陷阱检查（kind: bundle / tool-bundle）。 */
 export async function checkBuildPitfalls(dir: string, pkg: Record<string, unknown> | null): Promise<CheckIssue[]> {
   const issues: CheckIssue[] = []
   const srcDir = join(dir, 'src')
 
-  // src 入口
   let srcEntry = false
   try {
     await fs.access(join(srcDir, 'index.ts'))
@@ -57,67 +117,73 @@ export async function checkBuildPitfalls(dir: string, pkg: Record<string, unknow
     issues.push({ code: 'no-source-entry', detail: 'src/index.ts 缺失' })
   }
 
-  // tsconfig
-  let tsconfig: Record<string, unknown> | null = null
-  try {
-    tsconfig = JSON.parse(await fs.readFile(join(dir, 'tsconfig.json'), 'utf8')) as Record<string, unknown>
-  } catch {
+  // tsconfig：extends 递归解析（PC-05）
+  const tsconfig = await resolveTsconfig(dir)
+  if (tsconfig === null) {
     issues.push({ code: 'no-tsconfig', detail: 'tsconfig.json 缺失或非法 JSON' })
+  } else if (!tsconfig.resolved) {
+    issues.push({ code: 'tsconfig-extends-unresolved', detail: `tsconfig extends 无法解析：${tsconfig.skipReason}——相关检查跳过` })
   }
 
-  const srcTexts = await collectTexts(srcDir, 0, 3, 'ts')
-  const srcUsesTsImports = hasTsRelativeImport(srcTexts)
+  const { texts: srcTexts, truncated: srcTruncated } = await collectTextsBounded(srcDir, ['.ts', '.tsx'])
+  const srcUsesTsImports = hasTsImport(srcTexts)
 
-  if (tsconfig) {
-    const opts = (tsconfig['compilerOptions'] ?? {}) as Record<string, unknown>
+  if (tsconfig !== null && tsconfig.resolved) {
+    const opts = tsconfig.compilerOptions
     const allowTsExt = opts['allowImportingTsExtensions'] === true
     const rewriteTsExt = opts['rewriteRelativeImportExtensions'] === true
     const outDir = opts['outDir']
     const declarationDir = opts['declarationDir']
     const hasExplicitNodeTypes = Array.isArray(opts['types']) && (opts['types'] as unknown[]).includes('node')
 
-    // 三件套
     if (srcUsesTsImports && !allowTsExt) {
-      issues.push({ code: 'missing-ts-ext-imports', detail: 'src 用了 .ts 相对导入但 tsconfig 缺 allowImportingTsExtensions（TS5097）' })
+      issues.push({ code: 'missing-ts-ext-imports', detail: 'src 用了 .ts 相对导入但最终 tsconfig 缺 allowImportingTsExtensions（TS5097）' })
     }
+    // PC-11：确定性运行时崩溃 → error 级
     if (srcUsesTsImports && allowTsExt && !rewriteTsExt) {
       issues.push({ code: 'missing-rewrite-imports', detail: '缺 rewriteRelativeImportExtensions——产物会残留 .ts 导入，运行时 ESM 崩溃' })
     }
-    // lib 布局一致性
     if (pkg && typeof outDir === 'string' && typeof pkg['main'] === 'string') {
       const mainDir = pkg['main'].split('/')[0]
       if (mainDir !== outDir) {
-        issues.push({ code: 'lib-layout-mismatch', detail: `tsconfig outDir "${outDir}" 与 main "${pkg['main']}" 前缀不一致` })
+        issues.push({ code: 'lib-layout-mismatch', detail: `最终 tsconfig outDir "${outDir}" 与 main "${pkg['main']}" 前缀不一致` })
       }
     }
-    // types 路径一致性（比较首段）
     if (pkg && typeof declarationDir === 'string' && typeof pkg['types'] === 'string') {
       const typesDir = pkg['types'].split('/')[0]
       if (typesDir !== declarationDir.split('/')[0]) {
-        issues.push({ code: 'types-path-mismatch', detail: `tsconfig declarationDir "${declarationDir}" 与 types "${pkg['types']}" 前缀不一致` })
+        issues.push({ code: 'types-path-mismatch', detail: `最终 tsconfig declarationDir "${declarationDir}" 与 types "${pkg['types']}" 前缀不一致` })
       }
     }
-    // node types 显式性（坑 3：Buffer 用户靠隐式包含是脆弱的）
     if (usesBufferOrNode(srcTexts) && !hasExplicitNodeTypes) {
-      issues.push({ code: 'implicit-node-types', detail: 'src 用 Buffer/node: 但 tsconfig 未显式声明 types: ["node"]（靠隐式 @types 包含，建议显式）' })
+      issues.push({ code: 'implicit-node-types', detail: 'src 用 Buffer/node: 但最终 tsconfig 未显式声明 types: ["node"]' })
     }
   }
 
-  // lib 产物残留 .ts 导入（运行时必崩）
-  const libTexts = await collectTexts(join(dir, 'lib'), 0, 2, 'js')
-  if (hasTsRelativeImport(libTexts)) {
-    issues.push({ code: 'stale-ts-imports', detail: 'lib/ 产物存在 .ts 相对导入残留——运行时 ESM 必崩（重新构建）' })
+  // lib 产物残留（PC-06：全模式）
+  const { texts: libTexts } = await collectTextsBounded(join(dir, 'lib'), ['.js', '.mjs', '.cjs'])
+  const staleTs = hasTsImport(libTexts) || hasWorkerTsUrl(libTexts)
+  const libEntryExists = libTexts.length > 0
+
+  // build/prepack 脚本（PC-11：lib 缺失 + 无 build → error）
+  const scripts = (pkg?.['scripts'] ?? {}) as Record<string, unknown>
+  const hasBuild = typeof scripts['build'] === 'string'
+  const hasPrepack = typeof scripts['prepack'] === 'string'
+  if (!hasBuild || !hasPrepack) {
+    if (!libEntryExists && !hasBuild) {
+      issues.push({ code: 'no-build-entry', detail: 'lib/ 不存在且无 scripts.build——clean checkout 无法生成运行入口' })
+    } else {
+      if (!hasBuild) issues.push({ code: 'no-build-script', detail: 'package.json 缺 scripts.build' })
+      if (!hasPrepack) issues.push({ code: 'no-build-script', detail: 'package.json 缺 scripts.prepack（发布 tarball 可能缺 lib）' })
+    }
   }
 
-  // build/prepack 脚本（TK-01 发布门禁：lib 不入库时 clean checkout 无入口）
-  if (pkg) {
-    const scripts = (pkg['scripts'] ?? {}) as Record<string, unknown>
-    if (typeof scripts['build'] !== 'string') {
-      issues.push({ code: 'no-build-script', detail: 'package.json 缺 scripts.build（clean checkout 无法构建入口）' })
-    }
-    if (typeof scripts['prepack'] !== 'string') {
-      issues.push({ code: 'no-build-script', detail: 'package.json 缺 scripts.prepack（发布 tarball 可能缺 lib）' })
-    }
+  if (staleTs) {
+    issues.push({ code: 'stale-ts-imports', detail: 'lib/ 产物存在 .ts 相对导入/worker URL 残留——运行时 ESM 必崩（重新构建）' })
+  }
+
+  if (srcTruncated) {
+    issues.push({ code: 'scan-truncated', detail: 'src 扫描超过资源预算被截断——检查可能不完整' })
   }
 
   return issues

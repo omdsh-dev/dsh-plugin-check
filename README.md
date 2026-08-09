@@ -33,14 +33,21 @@ DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / 
 | `scan` | 扫描父目录下所有 `dsh-*` 插件仓库（有 package.json 者）→ 汇总报告 |
 | `schema` | 输出全部检测项清单与判定标准（按形态适用的检测项矩阵，供模型/人核对） |
 
-## 形态识别与检测项（按形态适用，29 项）
+## 形态识别与检测项（按形态适用，33 项）
 
 | 类别 | error | warning |
 |---|---|---|
 | 清单协议 | no-manifest / invalid-name / missing-main-or-types / no-patch | incomplete-files / missing-peer / no-bundle-decl |
 | patch 格式 | malformed-patch / patch-name-mismatch / duplicate-row-id | unexpected-fields |
 | 构建陷阱 | no-source-entry / no-tsconfig / missing-ts-ext-imports / lib-layout-mismatch / stale-ts-imports | missing-rewrite-imports / types-path-mismatch / implicit-node-types / no-build-script |
+| 生态合规（Profile Bundle） | core-row-id | missing-profile-install-example / manual-install-only / core-modification-required |
 | hub 收录 | — | not-in-hub（hub-skipped 为 info） |
+
+生态合规四项（immediate-adjustments-bundle-profile-plan §4.5）：
+- `core-row-id`：patch 条目使用官方核心 row（tools/session/llm/web/permission）；
+- `missing-profile-install-example`：README 缺 `dsh plugin --profile ... add` 示例；
+- `manual-install-only`：无法通过标准 Profile Bundle 安装（无 patch 或 README 无示例）；
+- `core-modification-required`：默认安装流程要求修改 DSH 核心（git apply / cp 进 monorepo；明确标注"手动安装与旧版本兼容"的段落不计入）。
 
 `verdict`：0 error → pass；有 error → fail；仅 warning → warn。
 `kind`：registry / skill / collection / tool-bundle / bundle / infra / unknown——按形态套用不同检查集（X-01 共享矩阵）。

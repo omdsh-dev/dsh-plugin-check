@@ -56,15 +56,38 @@ plugin_check { action: "scan", path: "C:/Users/admin/Desktop/dshext" }
   → {"root":"...","scanned":11,"reports":[...]}   # dsh-my-rsi 等不合规仓库会带 error+suggestions
 ```
 
-## 接入方式
+## 安装
 
-```bash
+### Profile Bundle（推荐）
+
+将本插件作为独立 bundle 安装到 profile（0806+）：
+
+```sh
+# 交互式（web）profile
 dsh plugin --profile web add "C:/path/to/dsh-plugin-check"
+# 一次性任务（headless）profile —— dsh run 默认使用 headless
 dsh plugin --profile headless add "C:/path/to/dsh-plugin-check"
-dsh --profile web --dump-config | grep plugin-check
-dsh run "用 plugin_check 检查 dsh-tool-csv 仓库"     # 端到端
 ```
 
+包内 `dsh.bundle.patch` 会在安装后自动把插件加入 profile 的 layer stack（row id：`tool-plugin-check`）。插件缺失的 peer 依赖（`cordis`、`@deepseek-ai/dsh-tools`）由 profile 的 healed `profiles/node_modules` 回退安装提供。
+
+> ⚠️ web 与 headless 是**不同 profile**：web 安装不会自动覆盖 headless；`dsh run` 默认使用 headless profile。Windows 路径使用正斜杠（`C:/...`）。
+
+### 验证安装
+
+```sh
+dsh --profile web --dump-config | grep tool-plugin-check
+```
+
+### 运行验证
+
+```sh
+dsh run "使用 plugin_check 工具检查一个插件仓库"
+```
+
+### 手动安装与旧版本兼容
+
+仅适用于不支持 Profile Bundle 的旧快照或插件开发调试环境（本地 junction/symlink、手动编辑 profile 层）。
 ## 测试
 
 ```bash

@@ -38,6 +38,8 @@ const ERROR_CODES = new Set([
   'malformed-registry-manifest', 'invalid-registry-id', 'invalid-registry-version',
   'registry-main-missing', 'registry-client-main', 'registry-client-contract',
   'invalid-engines-dsh', 'malformed-contributes',
+  // 生态合规（plan §4.5）
+  'core-row-id',
 ])
 
 /** suggestions 模板。 */
@@ -74,6 +76,10 @@ const SUGGESTION_TEMPLATES: Record<string, string> = {
   'not-in-hub': '在 hub 仓库 catalog.source.json 登记（分类按仓库形态），或等 2 小时自动同步',
   'hub-skipped': 'hub 状态未能检查（离线/无 gh）——非仓库问题',
   'scan-truncated': '扫描超过资源预算被截断——重新检查或清理仓库体积',
+  'core-row-id': 'patch row id 改用 tool-<name> / service-<name> / client-<name>，避开官方核心 row（tools/session/llm/web/permission）',
+  'missing-profile-install-example': 'README 补 `dsh plugin --profile <profile> add <plugin>` 示例（放在手动安装之前）',
+  'manual-install-only': '补 dsh.bundle.patch 并在 README 首位给出标准安装命令；手动复制仅作旧版本兼容标注',
+  'core-modification-required': '默认安装流程改为 dsh plugin --profile add；git apply / cp 进 monorepo 仅标注为旧版本兼容或开发调试',
 }
 
 export function isErrorCode(code: string): boolean {
@@ -123,6 +129,11 @@ export const CHECK_SCHEMA: CheckItemDef[] = [
   { code: 'registry-client-contract', severity: 'warning', description: 'client.inject 类型非法', appliesTo: ['registry'] },
   { code: 'invalid-engines-dsh', severity: 'warning', description: 'engines.dsh 非法 semver range', appliesTo: ['registry'] },
   { code: 'malformed-contributes', severity: 'warning', description: 'contributes.tools/skills 结构非法', appliesTo: ['registry'] },
+  // ── 生态合规（Profile Bundle 安装边界，plan §4.5）──
+  { code: 'core-row-id', severity: 'error', description: 'patch 条目使用了官方核心 row id', appliesTo: ['bundle', 'tool-bundle'] },
+  { code: 'missing-profile-install-example', severity: 'warning', description: 'README 缺 dsh plugin --profile add 示例', appliesTo: ['bundle', 'tool-bundle', 'collection'] },
+  { code: 'manual-install-only', severity: 'warning', description: '无法通过标准 Profile Bundle 安装', appliesTo: ['bundle', 'tool-bundle'] },
+  { code: 'core-modification-required', severity: 'warning', description: '默认流程要求修改 DSH 核心', appliesTo: ['bundle', 'tool-bundle', 'collection'] },
   // ── 通用 ──
   { code: 'not-in-hub', severity: 'warning', description: '未收录进 hub catalog', appliesTo: ['registry', 'bundle', 'tool-bundle', 'collection', 'skill'] },
   { code: 'hub-skipped', severity: 'info', description: 'hub 状态检查被跳过（离线/无 gh）', appliesTo: ['registry', 'bundle', 'tool-bundle', 'collection', 'skill'] },

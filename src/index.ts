@@ -23,6 +23,8 @@ import { checkPatch } from './patch.ts'
 import { checkBuildPitfalls } from './build-check.ts'
 import { checkRegistry } from './registry.ts'
 import { checkHubStatus, resolveRepoIdentity } from './hub.ts'
+import { checkProfileInstallDocs, checkCoreRowIds, isBundleInstallable } from './ecosystem.ts'
+import { parsePatchSections } from './patch.ts'
 import { buildRepoReport, CHECK_SCHEMA, type CheckIssue, type RepoReport } from './report.ts'
 
 export const name = '@deepseek-ai/dsh-plugin-check'
@@ -32,6 +34,17 @@ interface PluginCheckArgs {
   action: string
   path?: unknown
   strict?: unknown
+}
+
+/** 读取 patch 全部条目 id 做 core row 冲突检查。 */
+async function checkCoreRowIdsOf(dir: string): Promise<CheckIssue[]> {
+  try {
+    const text = await fs.readFile(join(dir, 'cordis.patch.yml'), 'utf8')
+    const entries = parsePatchSections(text).flatMap(s => s.entries)
+    return checkCoreRowIds(entries)
+  } catch {
+    return [] // 无 patch 文件：由 no-patch/no-bundle-decl 检查覆盖
+  }
 }
 
 /** skill 形态基本校验：SKILL.md 存在且有 name/description frontmatter。 */
@@ -87,6 +100,7 @@ export async function checkRepo(dir: string, strict: boolean): Promise<RepoRepor
     }
     case 'collection': {
       issues.push(...await checkCollection(dir))
+      issues.push(...await checkProfileInstallDocs(dir, kind))
       break
     }
     case 'tool-bundle':
@@ -94,8 +108,17 @@ export async function checkRepo(dir: string, strict: boolean): Promise<RepoRepor
       const { issues: manifestIssues, pkg } = await checkManifest(dir)
       issues.push(...manifestIssues)
       if (pkg !== null) {
-        issues.push(...await checkPatch(dir, kind, pkg['name'] as string | undefined))
+        const patchIssues = await checkPatch(dir, kind, pkg['name'] as string | undefined)
+        issues.push(...patchIssues)
         issues.push(...await checkBuildPitfalls(dir, pkg))
+        // 生态合规（plan §4.5）：core row id + 安装边界文档
+        issues.push(...await checkCoreRowIdsOf(dir))
+        const docs = await checkProfileInstallDocs(dir, kind)
+        issues.push(...docs)
+        const hasPatchDecl = (pkg['dsh'] as { bundle?: { patch?: unknown } } | undefined)?.bundle?.patch !== undefined
+        if (!isBundleInstallable(hasPatchDecl, docs)) {
+          issues.push({ code: 'manual-install-only', detail: '无法通过标准 Profile Bundle 安装（缺 dsh.bundle.patch 或 README 无 dsh plugin --profile add 示例）——补 patch 并在 README 首位给出标准安装命令' })
+        }
       }
       break
     }

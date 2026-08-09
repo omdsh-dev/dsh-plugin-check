@@ -106,3 +106,28 @@ describe('checkPatch: 仓库级检查（kind 感知）', () => {
     expect(await checkPatch(dir, 'bundle', undefined)).toEqual([])
   })
 })
+
+describe('生态：multi-row patch 与 override config（plan §4.5/§7）', () => {
+  it('一次 insert 多个 row：全部条目解析，无重复 row id 误报', () => {
+    const sections = parsePatchSections(`- insert:
+    - id: tool-a
+      name: '@deepseek-ai/a'
+    - id: tool-b
+      name: '@deepseek-ai/b'
+      config:
+        mode: native
+`)
+    expect(sections[0]?.entries).toHaveLength(2)
+    expect(sections[0]?.errors).toEqual([])
+    expect(sections[0]?.entries.map(e => e.id)).toEqual(['tool-a', 'tool-b'])
+  })
+
+  it('override config（update + config 整块重述）合法', () => {
+    const sections = parsePatchSections(`- id: tools
+  config:
+    mode: native
+`)
+    expect(sections[0]?.op).toBe('update')
+    expect(sections[0]?.entries[0]?.fields).toContain('config')
+  })
+})

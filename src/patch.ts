@@ -77,12 +77,25 @@ export function parsePatchSections(text: string): PatchSection[] {
       nestedFieldIndent = -1
       continue
     }
-    // 未知顶层条目（如 `- foo:`）→ 记入 unknown section
-    if (indent === 0 && content.startsWith('- ')) {
-      current = { op: 'unknown', entries: [], errors: [`unknown top-level entry: ${content.slice(0, 40)}`] }
-      sections.push(current)
-      currentEntry = undefined
-      continue
+    // 顶层裸 `- id: x` → id-targeted update（plan §4.3 "覆盖已有 row" 形态，
+    // config 整块重述；与官方 PatchOptions 的 id-targeted 语义一致）
+    if (indent === 0) {
+      const topIdRe = /^- id:\s*(.+)$/.exec(content)
+      if (topIdRe) {
+        current = { op: 'update', entries: [], errors: [] }
+        sections.push(current)
+        currentEntry = { id: stripQuotes(topIdRe[1]!), name: '', fields: [] }
+        current.entries.push(currentEntry)
+        nestedFieldIndent = -1
+        continue
+      }
+      // 未知顶层条目（如 `- foo:`）→ 记入 unknown section
+      if (content.startsWith('- ')) {
+        current = { op: 'unknown', entries: [], errors: [`unknown top-level entry: ${content.slice(0, 40)}`] }
+        sections.push(current)
+        currentEntry = undefined
+        continue
+      }
     }
     if (!current) {
       sections.push({ op: 'unknown', entries: [], errors: [`content before any section: ${content.slice(0, 40)}`] })

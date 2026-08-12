@@ -59,14 +59,14 @@ export async function checkManifest(dir: string): Promise<ManifestResult> {
     }
   }
 
-  // peer 依赖（工具插件需 dsh-tools + cordis）
+  // peer 依赖（工具插件需 dsh-tools + cordis；npm rc.1 为 scoped @deepseek-ai/cordis）
   const peers = pkg['peerDependencies']
   if (!peers || typeof peers !== 'object') {
     issues.push({ code: 'missing-peer', detail: 'peerDependencies 未声明' })
   } else {
     const peerKeys = Object.keys(peers as Record<string, unknown>)
-    if (!peerKeys.includes('cordis')) {
-      issues.push({ code: 'missing-peer', detail: 'peerDependencies 缺少 cordis' })
+    if (!peerKeys.includes('@deepseek-ai/cordis') && !peerKeys.includes('cordis')) {
+      issues.push({ code: 'missing-peer', detail: 'peerDependencies 缺少 cordis（npm rc.1 为 @deepseek-ai/cordis）' })
     }
   }
 

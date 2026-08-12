@@ -40,7 +40,7 @@ export const GOOD_PACKAGE = JSON.stringify({
   main: 'lib/index.js',
   types: 'lib/types/index.d.ts',
   scripts: { build: 'tsc -p tsconfig.json', prepack: 'npm run build' },
-  peerDependencies: { '@deepseek-ai/dsh-tools': '*', cordis: '*' },
+  peerDependencies: { '@deepseek-ai/dsh-tools': '*', '@deepseek-ai/cordis': '*' },
   dsh: { bundle: { patch: './cordis.patch.yml' } },
   files: ['lib', 'src', 'cordis.patch.yml'],
 }, null, 2)

@@ -10,7 +10,7 @@
  */
 
 import { promises as fs } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { collectTextsBounded } from './paths.ts'
 import type { CheckIssue } from './report.ts'
 
@@ -103,6 +103,16 @@ function usesBufferOrNode(texts: string[]): boolean {
   return texts.some(t => /Buffer\./.test(t) || /\bfrom ['"]node:/.test(t))
 }
 
+/** `child` 是否位于 `parent` 目录内部（含相等；规范化路径判断，非字符串前缀）。 */
+function isPathInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === '' || (
+    rel !== '..' &&
+    !rel.startsWith('..' + sep) &&
+    !rel.startsWith(sep)
+  )
+}
+
 /** 静态构建陷阱检查（kind: bundle / tool-bundle）。 */
 export async function checkBuildPitfalls(dir: string, pkg: Record<string, unknown> | null): Promise<CheckIssue[]> {
   const issues: CheckIssue[] = []
@@ -144,9 +154,25 @@ export async function checkBuildPitfalls(dir: string, pkg: Record<string, unknow
       issues.push({ code: 'missing-rewrite-imports', detail: '缺 rewriteRelativeImportExtensions——产物会残留 .ts 导入，运行时 ESM 崩溃' })
     }
     if (pkg && typeof outDir === 'string' && typeof pkg['main'] === 'string') {
-      const mainDir = pkg['main'].split('/')[0]
-      if (mainDir !== outDir) {
-        issues.push({ code: 'lib-layout-mismatch', detail: `最终 tsconfig outDir "${outDir}" 与 main "${pkg['main']}" 前缀不一致` })
+      // Issue #1：识别「tsc 出类型 + tsdown/rollup 出 JS」的声明分离布局。
+      // outDir 位于 main 所在目录内部、且 package.json.types 指向 outDir 内文件时放行；
+      // 其余不一致仍报 lib-layout-mismatch。
+      const mainPath = resolve(dir, pkg['main'])
+      const mainDir = dirname(mainPath)
+      const outDirPath = resolve(dir, outDir)
+
+      const sameLayout = mainDir === outDirPath
+      let declarationSeparated = false
+      if (typeof pkg['types'] === 'string') {
+        const typesPath = resolve(dir, pkg['types'])
+        declarationSeparated =
+          mainDir !== outDirPath &&
+          isPathInside(mainDir, outDirPath) &&
+          isPathInside(outDirPath, typesPath)
+      }
+
+      if (!sameLayout && !declarationSeparated) {
+        issues.push({ code: 'lib-layout-mismatch', detail: `最终 tsconfig outDir "${outDir}" 与 main "${pkg['main']}" 布局不一致` })
       }
     }
     if (pkg && typeof declarationDir === 'string' && typeof pkg['types'] === 'string') {

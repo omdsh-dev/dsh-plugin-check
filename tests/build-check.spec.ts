@@ -111,6 +111,69 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
     })
     expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('implicit-node-types')
   })
+
+  it('accepts declaration-separated bundle layouts (Issue #1: tsc + tsdown)', async () => {
+    const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          outDir: 'lib/types',
+          declarationDir: 'lib/types',
+        },
+      }),
+      'src/index.ts': 'export const apply = () => {}',
+      'lib/index.js': 'export const apply = () => {}',
+      'lib/types/index.d.ts': 'export declare const apply: () => void',
+    })
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    expect(issues).not.toContain('lib-layout-mismatch')
+  })
+
+  it('accepts declaration-separated layouts with outDir nested under main dir', async () => {
+    const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib/types/out' } }),
+      'src/index.ts': 'export {}',
+      'lib/index.js': 'export {}',
+      'lib/types/out/index.d.ts': 'export {}',
+    })
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ types: 'lib/types/out/index.d.ts' }))))
+    expect(issues).not.toContain('lib-layout-mismatch')
+  })
+
+  it('still reports lib-layout-mismatch when types points outside outDir', async () => {
+    const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib/types/out' } }),
+      'src/index.ts': 'export {}',
+      'lib/index.js': 'export {}',
+      'lib/types/out/index.d.ts': 'export {}',
+    })
+    // types 指向 outDir 之外（lib/types/index.d.ts 而非 lib/types/out/...）→ 布局不可信
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    expect(issues).toContain('lib-layout-mismatch')
+  })
+
+  it('still reports lib-layout-mismatch when types is missing in a separated layout', async () => {
+    const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib/types' } }),
+      'src/index.ts': 'export {}',
+      'lib/index.js': 'export {}',
+      'lib/types/index.d.ts': 'export {}',
+    })
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ types: undefined }))))
+    expect(issues).toContain('lib-layout-mismatch')
+  })
+
+  it('still reports unrelated outDir/main layouts (Issue #1 negative)', async () => {
+    const dir = makePlugin({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          outDir: 'dist/types',
+        },
+      }),
+      'src/index.ts': 'export {}',
+    })
+    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    expect(issues).toContain('lib-layout-mismatch')
+  })
 })
 
 describe('resolveTsconfig: extends 解析', () => {

@@ -37,6 +37,62 @@ describe('parsePatchSections: 行级解析 v2（审查 PC-03）', () => {
     expect(sections[0]?.errors).toEqual([])
   })
 
+  it('absorbs first-level config children and deeper nesting (Issue #1)', () => {
+    const sections = parsePatchSections(`- insert:
+    - id: tool-example
+      name: '@deepseek-ai/tool-example'
+      config:
+        maxItems: 100
+        fetchTimeoutMs: 5000
+        nested:
+          enabled: true
+`)
+    expect(sections[0]?.errors).toEqual([])
+    expect(sections[0]?.entries[0]?.fields).toEqual(['config'])
+  })
+
+  it('accepts lists inside config without parsing their items (Issue #1)', () => {
+    const sections = parsePatchSections(`- insert:
+    - id: tool-x
+      config:
+        items:
+          - one
+          - two
+`)
+    expect(sections[0]?.errors).toEqual([])
+    expect(sections[0]?.entries[0]?.fields).toEqual(['config'])
+  })
+
+  it('does not report nested config fields as unexpected-fields via checkPatch (Issue #1)', async () => {
+    const dir = makePlugin({
+      'cordis.patch.yml': `- insert:
+    - id: tool-x
+      name: '@deepseek-ai/x'
+      config:
+        maxItems: 10
+        fetchTimeoutMs: 1000
+        cacheTtlMs: 5000
+        nested:
+          enabled: true
+`,
+    })
+    const issues = await checkPatch(dir, 'bundle', undefined)
+    expect(issues.map(i => i.code)).not.toContain('unexpected-fields')
+    expect(issues.map(i => i.code)).not.toContain('malformed-patch')
+  })
+
+  it('still reports unknown top-level fields (Issue #1 regression guard)', async () => {
+    const dir = makePlugin({
+      'cordis.patch.yml': `- insert:
+    - id: tool-x
+      metadata:
+        internal: true
+`,
+    })
+    const issues = await checkPatch(dir, 'bundle', undefined)
+    expect(issues.map(i => i.code)).toContain('unexpected-fields')
+  })
+
   it('supports update/disable sections without treating them as malformed (PC-03)', () => {
     const sections = parsePatchSections(`- insert:
     - id: a

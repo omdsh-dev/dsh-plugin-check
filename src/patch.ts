@@ -103,6 +103,12 @@ export function parsePatchSections(text: string): PatchSection[] {
       continue
     }
 
+    // 嵌套吸收（Issue #1）：config 吸收线（含列表项、任意缩进内容）内的行整体跳过，
+    // 必须位于 entryRe/fieldRe 解析之前，否则 `- item` 等列表行会被当作 unparseable。
+    if (nestedFieldIndent >= 0 && indent >= nestedFieldIndent) {
+      continue
+    }
+
     // 条目开始：`- id: x` / `- name: x` / `- config:`
     const entryRe = /^- ([a-zA-Z][\w-]*):\s*(.*)$/.exec(content)
     if (entryRe) {
@@ -113,7 +119,8 @@ export function parsePatchSections(text: string): PatchSection[] {
       if (key === 'id') currentEntry.id = value
       else if (key === 'name') currentEntry.name = value
       else currentEntry.fields.push(key)
-      nestedFieldIndent = value === '' ? indent + 2 : -1 // 空值字段可能带嵌套子行
+      // Issue #1：仅 config 开启嵌套吸收（插件自定义配置，内容不透明）
+      nestedFieldIndent = key === 'config' && value === '' ? indent + 2 : -1
       continue
     }
 
@@ -123,16 +130,12 @@ export function parsePatchSections(text: string): PatchSection[] {
       current.errors.push(`unparseable line: ${content.slice(0, 40)}`)
       continue
     }
-    // 嵌套字段（比当前字段更深的缩进）→ 属于 config 等嵌套，不单独解析
-    if (nestedFieldIndent >= 0 && indent > nestedFieldIndent) {
-      continue
-    }
     const entry = ensureEntry()
     const key = fieldRe[1]!
     if (key === 'id') entry.id = stripQuotes(fieldRe[2]!)
     else if (key === 'name') entry.name = stripQuotes(fieldRe[2]!)
     else entry.fields.push(key)
-    nestedFieldIndent = fieldRe[2]!.trim() === '' ? indent + 2 : -1
+    nestedFieldIndent = key === 'config' && fieldRe[2]!.trim() === '' ? indent + 2 : -1
   }
 
   for (const s of sections) {

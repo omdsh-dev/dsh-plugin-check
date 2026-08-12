@@ -12,7 +12,7 @@
  * 安全边界：只读；路径 containment（防逃逸/symlink）；资源预算；
  * hub 检查离线优先、失败静默降级。
  */
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import { type RepoReport } from './report.ts';
 export declare const name = "@deepseek-ai/dsh-plugin-check";
 export declare const inject: string[];

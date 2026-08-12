@@ -1,5 +1,4 @@
 node_modules/
 *.tsbuildinfo
 DESIGN.md
-pnpm-lock.yaml
-pnpm-workspace.yaml
+*.tgz

@@ -13,7 +13,7 @@ export function makePlugin(files: Record<string, string>): string {
   return dir
 }
 
-export const GOOD_TS_SRC = `import type { Context } from 'cordis'
+export const GOOD_TS_SRC = `import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { impl } from './impl.ts'
 

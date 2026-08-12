@@ -13,7 +13,7 @@
  * hub 检查离线优先、失败静默降级。
  */
 
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'

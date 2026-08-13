@@ -1,5 +1,7 @@
 # dsh-plugin-check
 
+[English](README.en.md)
+
 DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / patch 格式 / 构建陷阱 / hub 收录状态**，输出合规报告与修复建议。**只读**，不修改、不构建被检查仓库。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

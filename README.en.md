@@ -65,31 +65,41 @@ plugin_check { action: "scan", path: "C:/Users/admin/Desktop/dshext" }
   → {"root":"...","scanned":11,"reports":[...]}   # dsh-my-rsi 等不合规仓库会带 error+suggestions
 ```
 
-## npm rc.1 Compatibility (Verified)
+## npm 0.1.0-rc.6 Compatibility (Verified)
 
-This plugin has been migrated to the npm rc.1 dependency line and fully validated end-to-end in an isolated consumer of `@deepseek-ai/dsh@0.0.1-rc.1`:
+This plugin has been migrated to the npm 0.1.0-rc.6 dependency line and fully validated end-to-end in an isolated consumer of `@deepseek-ai/dsh@0.1.0-rc.6`:
 
-- **Type/runtime**: `@deepseek-ai/cordis@^4.0.1-rc.1` + `@deepseek-ai/dsh-tools@^0.0.1-rc.1` + `@deepseek-ai/dsh-invariants@^0.0.1-rc.1` (peer); no longer depends on unscoped `cordis`
+- **Type/runtime**: `@deepseek-ai/cordis@^4.0.1` + `@deepseek-ai/dsh-tools@>=0.0.1-rc.1 <0.2.0` + `@deepseek-ai/dsh-invariants@>=0.0.1-rc.1 <0.2.0` (peer); no longer depends on unscoped `cordis`
 - **Standalone build**: `npm install` (devDependencies self-contained: typescript/vitest/@types/node) → `npm run typecheck` → `npm test` → `npm run build` → `npm pack`
-- **Consumption validation**: the tarball is installed into an rc.1 consumer → `dsh --profile compat --dump-config` shows this plugin's row → the tool actually registers and executes successfully
-- **Launch method**: `npx -p @deepseek-ai/dsh@0.0.1-rc.1 dsh web` (lib production mode; do not `install -g` globally)
+- **Consumption validation**: the tarball is installed into a 0.1.0-rc.6 consumer → `dsh --profile compat --dump-config` shows this plugin's row → the tool actually registers and executes successfully
+- **Launch method**: `npx -p @deepseek-ai/dsh@0.1.0-rc.6 dsh web` (lib production mode; do not `install -g` globally)
 
 ## Installation
 
 ### Profile Bundle (Recommended)
 
-Install this plugin as a standalone bundle into a profile (0806+):
+The repository lives at [omdsh-dev/dsh-plugin-check](https://github.com/omdsh-dev/dsh-plugin-check) (public). Install this plugin as a standalone bundle into a profile (DSH 0.1.0-rc.6 (npm)):
 
 ```sh
 # 交互式（web）profile
-dsh plugin --profile web add "C:/path/to/dsh-plugin-check"
+dsh plugin --profile web add github:omdsh-dev/dsh-plugin-check
 # 一次性任务（headless）profile —— dsh run 默认使用 headless
-dsh plugin --profile headless add "C:/path/to/dsh-plugin-check"
+dsh plugin --profile headless add github:omdsh-dev/dsh-plugin-check
 ```
 
 The `dsh.bundle.patch` inside the package automatically adds the plugin to the profile's layer stack after installation (row id: `tool-plugin-check`). Missing peer dependencies of the plugin (`cordis`, `@deepseek-ai/dsh-tools`) are provided by the profile's healed `profiles/node_modules` fallback install.
 
 > ⚠️ web and headless are **different profiles**: installing to web does not automatically cover headless; `dsh run` uses the headless profile by default. Windows paths use forward slashes (`C:/...`).
+
+### Installing from an npm pack Tarball
+
+Build locally and install from the tarball path (no GitHub dependency):
+
+```sh
+# tarball method (web shown; headless same)
+npm pack
+dsh plugin --profile web add <path to the npm pack tarball>
+```
 
 ### Verify Installation
 
@@ -105,7 +115,7 @@ dsh run "使用 plugin_check 工具检查一个插件仓库"
 
 ### Manual Installation & Legacy Compatibility
 
-Only for legacy snapshots that do not support Profile Bundle, or plugin development/debugging environments (local junction/symlink, manually editing profile layers).
+Legacy scenarios: monorepo integration, legacy snapshots that do not support Profile Bundle, or plugin development/debugging environments (local junction/symlink, manually editing profile layers).
 ## Testing
 
 ```bash

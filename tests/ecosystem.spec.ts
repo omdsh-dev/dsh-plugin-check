@@ -4,6 +4,7 @@ import { checkRepo } from '../src/index.ts'
 import { goodPlugin, makePlugin } from './helpers.ts'
 
 const codes = (issues: Array<{ code: string }>) => issues.map(i => i.code)
+const noHub = async () => ({ status: 'in-hub' as const, issues: [] })
 
 const GOOD_README = `# demo
 
@@ -80,7 +81,7 @@ describe('isBundleInstallable / checkRepo 集成（plan §4.5）', () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
     fs.writeFileSync(path.join(dir, 'README.md'), GOOD_README)
-    const r = await checkRepo(dir, false)
+    const r = await checkRepo(dir, false, noHub)
     expect(codes(r.errors).includes('manual-install-only')).toBe(false)
     expect(codes(r.warnings).includes('manual-install-only')).toBe(false)
     expect(codes(r.errors)).not.toContain('core-row-id')
@@ -90,7 +91,7 @@ describe('isBundleInstallable / checkRepo 集成（plan §4.5）', () => {
   it('无 README 示例 → manual-install-only + missing-profile-install-example', async () => {
     const dir = goodPlugin()
     // goodPlugin 无 README → docs 检查触发 missing 与 manual
-    const r = await checkRepo(dir, false)
+    const r = await checkRepo(dir, false, noHub)
     expect(codes(r.warnings)).toContain('missing-profile-install-example')
     expect(codes(r.warnings)).toContain('manual-install-only')
   })
@@ -99,7 +100,7 @@ describe('isBundleInstallable / checkRepo 集成（plan §4.5）', () => {
     const dir = goodPlugin()
     const fs = await import('node:fs')
     fs.writeFileSync(require('node:path').join(dir, 'cordis.patch.yml'), '- insert:\n    - id: tools\n      name: "@deepseek-ai/dsh-tool-good"\n')
-    const r = await checkRepo(dir, false)
+    const r = await checkRepo(dir, false, noHub)
     expect(codes(r.errors)).toContain('core-row-id')
   })
 
@@ -116,7 +117,7 @@ describe('isBundleInstallable / checkRepo 集成（plan §4.5）', () => {
       'lib/types/index.d.ts': 'export {}\n',
       'README.md': GOOD_README,
     })
-    const r = await checkRepo(dir, false)
+    const r = await checkRepo(dir, false, noHub)
     expect(codes(r.errors)).not.toContain('core-row-id')
     expect(codes(r.warnings)).not.toContain('manual-install-only')
     expect(codes(r.warnings)).not.toContain('missing-profile-install-example')

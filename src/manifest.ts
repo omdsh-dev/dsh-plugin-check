@@ -29,9 +29,9 @@ export async function checkManifest(dir: string): Promise<ManifestResult> {
   // name：完整 npm 规则 + 组织政策（PC-07）
   const name = pkg['name']
   if (typeof name !== 'string' || !isValidPackageName(name)) {
-    issues.push({ code: 'invalid-name', detail: `name 不符合 npm 包名规则: ${String(name)}` })
+    issues.push({ code: 'invalid-name-format', detail: `name 不符合 npm 包名规则: ${String(name)}` })
   } else if (!matchesOrgPolicy(name)) {
-    issues.push({ code: 'invalid-name', detail: `name 不符合组织政策（@deepseek-ai/* 或 dsh-*）: ${name}` })
+    issues.push({ code: 'non-org-recommended-name', detail: `name 虽符合 npm 规则但不在推荐组织范围（@deepseek-ai/*、@dsh-external/*、@omdsh/* 或 dsh-*）：${name}` })
   }
 
   // main/types：containment（PC-04）

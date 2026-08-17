@@ -79,7 +79,7 @@ export async function checkRegistry(dir: string): Promise<CheckIssue[]> {
   try {
     const pkg = JSON.parse(await fs.readFile(join(dir, 'package.json'), 'utf8')) as Record<string, unknown>
     if (typeof pkg['name'] === 'string' && !isValidPackageName(pkg['name'])) {
-      issues.push({ code: 'invalid-name', detail: `package name 非法: ${pkg['name']}` })
+      issues.push({ code: 'invalid-name-format', detail: `package name 非法: ${pkg['name']}` })
     }
   } catch {
     // registry 原生插件允许无 package.json

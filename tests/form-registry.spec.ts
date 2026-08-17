@@ -19,6 +19,30 @@ describe('detectKind: 形态识别（PC-02）', () => {
     expect(await detectKind(dir)).toBe('collection')
   })
 
+  it('prefers a valid non-empty dsh.bundle.patch declaration over registry marker (#4)', async () => {
+    const dir = makePlugin({
+      'package.json': JSON.stringify({ name: 'dsh-x', main: 'lib/index.js', dsh: { bundle: { patch: './not-created-yet.yml' } } }),
+      'dsh.plugin.json': '{}',
+      'src/index.ts': 'export const a = 1',
+    })
+    expect(await detectKind(dir)).toBe('bundle')
+    const collection = makePlugin({
+      'package.json': JSON.stringify({ name: 'dsh-toolkit', main: 'lib/index.js', dsh: { bundle: { patch: './patch.yml' } } }),
+      'catalog.json': JSON.stringify({ collection: 'dsh-toolkit', plugins: [] }),
+    })
+    expect(await detectKind(collection)).toBe('collection')
+    const blank = makePlugin({
+      'package.json': JSON.stringify({ name: 'dsh-x', main: 'lib/index.js', dsh: { bundle: { patch: '  ' } } }),
+      'dsh.plugin.json': '{}',
+    })
+    expect(await detectKind(blank)).toBe('registry')
+    const both = makePlugin({
+      'package.json': JSON.stringify({ name: 'dsh-x', main: 'lib/index.js', dsh: { bundle: { patch: './patch.yml' } } }),
+      'dsh.plugin.json': '{}',
+    })
+    expect(await detectKind(both)).toBe('bundle')
+  })
+
   it('detects tool-bundle vs bundle by dsh-tools import', async () => {
     const tool = makePlugin({ 'package.json': JSON.stringify({ name: '@deepseek-ai/x', main: 'lib/index.js' }), 'src/index.ts': "import { defineTool } from '@deepseek-ai/dsh-tools'\n" })
     expect(await detectKind(tool)).toBe('tool-bundle')
@@ -29,6 +53,12 @@ describe('detectKind: 形态识别（PC-02）', () => {
   it('detects infra for packages without a main entry (PC-02)', async () => {
     const dir = makePlugin({ 'package.json': JSON.stringify({ name: 'dsh-my-rsi', private: true }) })
     expect(await detectKind(dir)).toBe('infra')
+    const declared = makePlugin({
+      'package.json': JSON.stringify({ name: 'dsh-broken', dsh: { bundle: { patch: './missing.yml' } } }),
+      'dsh.plugin.json': '{}',
+      'src/index.ts': "import { defineTool } from '@deepseek-ai/dsh-tools'",
+    })
+    expect(await detectKind(declared)).toBe('tool-bundle')
   })
 
   it('returns unknown for unrecognizable directories', async () => {
@@ -87,5 +117,14 @@ describe('checkRegistry: dsh.plugin.json 契约（PC-01）', () => {
       'index.mjs': 'x',
     })
     expect((await checkRegistry(dir)).map(i => i.code)).toContain('malformed-contributes')
+  })
+
+  it('reports invalid package.json name with the shared format code', async () => {
+    const dir = makePlugin({
+      'dsh.plugin.json': GOOD,
+      'index.mjs': 'x',
+      'package.json': JSON.stringify({ name: 'Bad_Name' }),
+    })
+    expect((await checkRegistry(dir)).map(i => i.code)).toContain('invalid-name-format')
   })
 })

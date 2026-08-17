@@ -55,7 +55,26 @@ export async function detectKind(dir: string): Promise<RepoKind> {
   const hasSkill = await exists(join(dir, 'SKILL.md'))
   const hasCatalog = await exists(join(dir, 'catalog.json'))
 
-  if (hasRegistry) return 'registry'
+  // A valid, non-empty bundle declaration is the package protocol marker. It
+  // takes precedence over an adjacent dsh.plugin.json (which may be a stale
+  // registry artifact). Detection deliberately does not resolve the patch
+  // path; checkManifest owns that later filesystem validation.
+  let pkg: Record<string, unknown> | null = null
+  let hasValidBundleDecl = false
+  if (hasPkg) {
+    try {
+      pkg = JSON.parse(await fs.readFile(join(dir, 'package.json'), 'utf8')) as Record<string, unknown>
+      const dsh = pkg['dsh']
+      const bundle = dsh && typeof dsh === 'object' ? (dsh as Record<string, unknown>)['bundle'] : undefined
+      const patch = bundle && typeof bundle === 'object' ? (bundle as Record<string, unknown>)['patch'] : undefined
+      hasValidBundleDecl = typeof patch === 'string' && patch.trim() !== ''
+    } catch { /* invalid package.json is handled by manifest checks */ }
+  }
+
+  // A valid bundle declaration supersedes only the registry protocol. A
+  // collection catalog remains authoritative when both protocols are present
+  // (for example dsh-toolkit, which is a distribution rather than a plugin).
+  if (hasRegistry && !hasValidBundleDecl) return 'registry'
   if (hasSkill && !hasPkg) return 'skill'
   if (!hasPkg && await hasSkillsDir(dir)) return 'skill'
   if (hasCatalog) {
@@ -66,11 +85,8 @@ export async function detectKind(dir: string): Promise<RepoKind> {
     } catch { /* 非 collection */ }
   }
   if (hasPkg) {
-    // 无 main 的包不是可加载 bundle → infra（多包/基础设施仓库，如 dsh-my-rsi）
-    try {
-      const pkg = JSON.parse(await fs.readFile(join(dir, 'package.json'), 'utf8')) as Record<string, unknown>
-      if (typeof pkg['main'] !== 'string' || pkg['main'] === '') return 'infra'
-    } catch { /* 交给 bundle 检查报 no-manifest */ }
+    // 无 main 的包不是可加载 bundle → infra（多包/基础设施，如 dsh-my-rsi）
+    if (!hasValidBundleDecl && pkg !== null && (typeof pkg['main'] !== 'string' || pkg['main'] === '')) return 'infra'
     const texts = await collectSrcTexts(dir)
     return looksLikeToolPlugin(texts) ? 'tool-bundle' : 'bundle'
   }

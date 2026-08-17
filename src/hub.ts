@@ -1,7 +1,6 @@
-/**
- * §3.4 hub 收录状态检查 v2 —— 审查 PC-09 修复：
- * 仓库身份优先从 git remote 解析（owner/repo），失败再回退目录 basename；
- * not-in-hub 的修复建议按形态推荐分类。
+/** Hub 收录状态检查。
+ * 默认从公开 omdsh-dev/dsh-hub-workshop catalog.json 读取；本地 DSH_HUB_SOURCE
+ * 优先，兼容旧 { repos: [{ name }] } catalog 与 dsh-hub-index/v0.4。
  */
 
 import { promises as fs } from 'node:fs'
@@ -13,7 +12,25 @@ import type { CheckIssue } from './report.ts'
 
 export type HubStatus = 'in-hub' | 'not-in-hub' | 'skipped'
 
-/** 本地 hub catalog 候选路径（环境变量优先，其次常见位置）。 */
+export interface HubPackage {
+  id?: unknown
+  name?: unknown
+  repository?: unknown
+  url?: unknown
+  [key: string]: unknown
+}
+
+export interface ModernHubCatalog {
+  format: 'dsh-hub-index/v0.4'
+  packages: HubPackage[]
+}
+
+export interface LegacyHubCatalog {
+  repos: Array<{ name: string }>
+}
+
+export type HubCatalog = ModernHubCatalog | LegacyHubCatalog
+
 function localCatalogCandidates(): string[] {
   const env = process.env['DSH_HUB_SOURCE']
   const out: string[] = []
@@ -26,59 +43,152 @@ function localCatalogCandidates(): string[] {
   return out
 }
 
-async function readLocalCatalog(): Promise<{ repos: Array<{ name: string }> } | null> {
-  for (const p of localCatalogCandidates()) {
-    try {
-      const parsed = JSON.parse(await fs.readFile(p, 'utf8')) as { repos?: Array<{ name: string }> }
-      if (Array.isArray(parsed['repos'])) return parsed as { repos: Array<{ name: string }> }
-    } catch {
-      // 继续尝试下一个候选
-    }
+/** Parse and validate both the current and legacy catalog formats. */
+export function parseHubCatalog(value: unknown): HubCatalog | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const packages = record['packages']
+  const format = record['format'] ?? record['schema'] ?? record['$schema']
+  if (Array.isArray(packages) && (format === 'dsh-hub-index/v0.4' || format === undefined)) {
+    const valid = packages.every(item => item !== null && typeof item === 'object' && typeof (item as Record<string, unknown>)['id'] === 'string')
+    if (valid) return { format: 'dsh-hub-index/v0.4', packages: packages as HubPackage[] }
+  }
+  const repos = record['repos']
+  if (Array.isArray(repos) && repos.every(item => item !== null && typeof item === 'object' && typeof (item as Record<string, unknown>)['name'] === 'string')) {
+    return { repos: repos as Array<{ name: string }> }
   }
   return null
 }
 
-/** 经 gh CLI 读取远端 hub catalog（失败返回 null）。 */
-async function fetchHubCatalogViaGh(): Promise<{ repos: Array<{ name: string }> } | null> {
-  return new Promise(resolve => {
-    execFile('gh', ['api', 'repos/dsh-external/hub/contents/catalog.json', '-q', '.content'], {
-      timeout: 5000,
+/** Parse JSON text without throwing, suitable for injected/network responses. */
+export function parseHubCatalogText(text: string): HubCatalog | null {
+  try { return parseHubCatalog(JSON.parse(text)) } catch { return null }
+}
+
+function repositoryIdentity(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  let text = value.trim().replace(/\.git$/, '')
+  text = text.replace(/^github:/, '')
+  const github = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(text)
+  if (github) return `${github[1]}/${github[2]}`
+  if (/^[^/\s]+\/[^/\s]+$/.test(text)) return text
+  return null
+}
+
+function repositoryName(value: unknown): string | null {
+  const identity = repositoryIdentity(value)
+  return identity ? identity.slice(identity.lastIndexOf('/') + 1) : null
+}
+
+/** Match a repo identity against a parsed catalog. Exported for offline tests. */
+export function catalogMatches(catalog: HubCatalog, identity: string): boolean {
+  if ('repos' in catalog) {
+    const name = basename(identity)
+    return catalog.repos.some(repo => repo.name === name)
+  }
+  const normalized = repositoryIdentity(identity)
+  const name = basename(identity)
+  return catalog.packages.some(pkg => {
+    // Current index is owner/repo-first. A bare name is only accepted when
+    // identity itself came from basename fallback, avoiding cross-owner hits.
+    for (const value of [pkg.id, pkg.repository, pkg.url]) {
+      if (typeof value === 'string' && (
+        value === identity ||
+        repositoryIdentity(value) === normalized ||
+        (normalized === null && repositoryName(value) === name)
+      )) return true
+    }
+    if (typeof pkg.name === 'string') {
+      return pkg.name === identity || (normalized === null && pkg.name === name) || repositoryName(pkg.name) === normalized
+    }
+    return false
+  })
+}
+
+/** Compatibility alias for callers/tests that prefer a verb-style name. */
+export const matchesHubCatalog = catalogMatches
+
+async function readLocalCatalog(): Promise<HubCatalog | null> {
+  for (const path of localCatalogCandidates()) {
+    try {
+      const parsed = parseHubCatalogText(await fs.readFile(path, 'utf8'))
+      if (parsed) return parsed
+    } catch { /* try the next candidate */ }
+  }
+  return null
+}
+
+export type FetchFailure = 'command-missing' | 'timeout' | 'permission-or-404' | 'response-too-large' | 'json-or-schema'
+interface FetchResult { catalog: HubCatalog | null; failure?: FetchFailure }
+
+/** Public catalog endpoint and raw-media gh arguments (kept exported for offline tests). */
+export const HUB_CATALOG_GH_ARGS = [
+  'api',
+  'repos/omdsh-dev/dsh-hub-workshop/contents/catalog.json',
+  '-H',
+  'Accept: application/vnd.github.raw+json',
+] as const
+
+export function classifyGhFailure(error: { code?: string | number; killed?: boolean; signal?: string } | null, stderr: string): FetchFailure {
+  if (error?.code === 'ENOENT') return 'command-missing'
+  if (error?.code === 'ENOBUFS') return 'response-too-large'
+  if (error?.code === 'ETIMEDOUT' || error?.killed || error?.signal === 'SIGTERM') return 'timeout'
+  if (/\b(401|403|404)\b|permission|forbidden|not found|authentication/i.test(stderr)) return 'permission-or-404'
+  return 'json-or-schema'
+}
+
+/** Fetch the public catalog through gh, without exposing command output/tokens. */
+let remoteCatalogFetch: Promise<FetchResult> | null = null
+async function fetchHubCatalogViaGh(): Promise<FetchResult> {
+  // A check/scan can inspect many repositories in one process. Share the
+  // single public catalog request so each report does not spawn gh again.
+  if (remoteCatalogFetch) return remoteCatalogFetch
+  remoteCatalogFetch = new Promise(resolve => {
+    execFile('gh', [...HUB_CATALOG_GH_ARGS], {
+      timeout: 15000,
+      maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
-    }, (error, stdout) => {
-      if (error) { resolve(null); return }
+    }, (error, stdout, stderr) => {
+      if (error) { resolve({ catalog: null, failure: classifyGhFailure(error, stderr) }); return }
       try {
-        const decoded = Buffer.from(stdout.trim(), 'base64').toString('utf8')
-        const parsed = JSON.parse(decoded) as { repos?: Array<{ name: string }> }
-        if (Array.isArray(parsed['repos'])) resolve(parsed as { repos: Array<{ name: string }> })
-        else resolve(null)
+        // The raw media Accept header returns catalog JSON directly. Do not
+        // base64-decode it: Contents API omits `.content` for large files.
+        const catalog = parseHubCatalogText(stdout)
+        resolve(catalog ? { catalog } : { catalog: null, failure: 'json-or-schema' })
       } catch {
-        resolve(null)
+        resolve({ catalog: null, failure: 'json-or-schema' })
       }
     })
   })
+  return remoteCatalogFetch
 }
 
-/** 从 git remote URL 提取仓库名；失败返回 null。 */
+function failureDetail(failure: FetchFailure): string {
+  switch (failure) {
+    case 'command-missing': return '公共 hub catalog 不可达：未找到 gh 命令（command missing）'
+    case 'timeout': return '公共 hub catalog 不可达：gh 请求超时（timeout）'
+    case 'permission-or-404': return '公共 hub catalog 不可达：无权限或资源不存在（permission/404）'
+    case 'response-too-large': return '公共 hub catalog 不可达：响应超过读取上限（response too large）'
+    case 'json-or-schema': return '公共 hub catalog 不可达：响应不是合法 JSON 或不符合 dsh-hub-index/v0.4/旧 catalog schema'
+  }
+}
+
 export async function repoNameFromGitRemote(dir: string): Promise<string | null> {
   return new Promise(resolve => {
-    execFile('git', ['-C', dir, 'remote', 'get-url', 'origin'], { timeout: 5000, windowsHide: true }, (error, stdout) => {
+    execFile('git', ['-C', dir, 'remote', 'get-url', 'origin'], { timeout: 1000, windowsHide: true }, (error, stdout) => {
       if (error) { resolve(null); return }
-      const url = stdout.trim()
-      // git@github.com:owner/repo.git | https://github.com/owner/repo.git | owner/repo
-      const m = /(?:github\.com[:/])([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url)
-        ?? /^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url)
-      resolve(m ? m[2]! : null)
+      const identity = repositoryIdentity(stdout.trim())
+      resolve(identity)
     })
   })
 }
 
-/** 仓库身份：git remote → basename 回退。 */
+/** 仓库身份：owner/repo from git remote → basename fallback. */
 export async function resolveRepoIdentity(dir: string): Promise<string> {
   const fromRemote = await repoNameFromGitRemote(dir)
   return fromRemote ?? basename(dir)
 }
 
-/** 按形态推荐 hub 分类。 */
 export function recommendedCategory(kind: RepoKind): string {
   switch (kind) {
     case 'collection': return 'collection'
@@ -89,24 +199,26 @@ export function recommendedCategory(kind: RepoKind): string {
   }
 }
 
-/** 检查仓库是否被 hub catalog 收录；网络/工具不可用时返回 'skipped'。 */
-export async function checkHubStatus(repoName: string, kind: RepoKind): Promise<{ status: HubStatus; issues: CheckIssue[] }> {
-  const issues: CheckIssue[] = []
-  let catalog = await readLocalCatalog()
+export async function checkHubStatus(repoIdentity: string, kind: RepoKind): Promise<{ status: HubStatus; issues: CheckIssue[] }> {
+  const local = await readLocalCatalog()
+  let catalog = local
+  let skippedDetail: string | undefined
   if (!catalog) {
-    catalog = await fetchHubCatalogViaGh()
-    if (!catalog) {
-      issues.push({ code: 'hub-skipped', detail: 'hub catalog 不可达（无本地 catalog 且 gh 调用失败）——已跳过' })
-      return { status: 'skipped', issues }
+    const remote = await fetchHubCatalogViaGh()
+    catalog = remote.catalog
+    if (!catalog) skippedDetail = failureDetail(remote.failure ?? 'json-or-schema')
+  }
+  if (!catalog) {
+    return {
+      status: 'skipped',
+      issues: [{ code: 'hub-skipped', detail: `${skippedDetail ?? 'hub catalog 不可达'}——已跳过（未泄露认证信息）` }],
     }
   }
-  const found = catalog.repos.some(r => r.name === repoName)
-  if (!found) {
-    issues.push({
-      code: 'not-in-hub',
-      detail: `仓库 ${repoName} 未收录进 hub catalog（catalog.source.json 登记为 ${recommendedCategory(kind)}，或等自动同步）`,
-    })
-    return { status: 'not-in-hub', issues }
+  if (!catalogMatches(catalog, repoIdentity)) {
+    return {
+      status: 'not-in-hub',
+      issues: [{ code: 'not-in-hub', detail: `仓库 ${repoIdentity} 未收录进 hub workshop catalog（按 ${recommendedCategory(kind)} 形态补充 intake 条目，或等待 catalog 同步）` }],
+    }
   }
-  return { status: 'in-hub', issues }
+  return { status: 'in-hub', issues: [] }
 }

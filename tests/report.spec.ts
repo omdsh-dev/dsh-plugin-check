@@ -60,7 +60,7 @@ describe('computeCheckResults / CHECK_SCHEMA（X-01：按形态适用矩阵）',
 
   it('covers all error codes', () => {
     const codes = new Set(CHECK_SCHEMA.map(c => c.code))
-    for (const code of ['no-manifest', 'invalid-name', 'missing-main-or-types', 'no-patch',
+    for (const code of ['no-manifest', 'invalid-name-format', 'missing-main-or-types', 'no-patch',
       'malformed-patch', 'patch-name-mismatch', 'duplicate-row-id', 'no-source-entry',
       'no-tsconfig', 'missing-ts-ext-imports', 'missing-rewrite-imports', 'lib-layout-mismatch',
       'stale-ts-imports', 'no-build-entry', 'malformed-registry-manifest', 'invalid-registry-id',

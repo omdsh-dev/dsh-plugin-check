@@ -8,6 +8,7 @@
  * - 动态严重度：src 用 .ts 导入 + 缺 rewrite → error（确定性运行时崩溃）；
  *   lib 缺失 + 无 build 脚本 → error（clean checkout 无入口）。
  */
+import type { RepoKind } from './form.ts';
 import type { CheckIssue } from './report.ts';
 export interface ResolvedTsconfig {
     compilerOptions: Record<string, unknown>;
@@ -18,5 +19,6 @@ export interface ResolvedTsconfig {
 }
 /** 递归解析 tsconfig（extends 相对文件路径；深度上限；失败返回 resolved:false）。 */
 export declare function resolveTsconfig(dir: string): Promise<ResolvedTsconfig | null>;
-/** 静态构建陷阱检查（kind: bundle / tool-bundle）。 */
-export declare function checkBuildPitfalls(dir: string, pkg: Record<string, unknown> | null): Promise<CheckIssue[]>;
+/** 静态构建陷阱检查。tool-bundle 检查 TypeScript 源码与 tsconfig；
+ * 普通 bundle 只检查已发布 lib 产物和 build/prepack/prepare 信号。 */
+export declare function checkBuildPitfalls(dir: string, kind: RepoKind, pkg: Record<string, unknown> | null): Promise<CheckIssue[]>;

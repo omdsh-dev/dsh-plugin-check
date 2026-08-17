@@ -83,8 +83,14 @@ async function checkCollection(dir: string): Promise<CheckIssue[]> {
   return issues
 }
 
-/** 检查单个仓库（按形态分流）。 */
-export async function checkRepo(dir: string, strict: boolean): Promise<RepoReport> {
+export type HubStatusChecker = typeof checkHubStatus
+
+/** 检查单个仓库（按形态分流）。hub checker 可注入，便于离线测试/批量调用复用 catalog。 */
+export async function checkRepo(
+  dir: string,
+  strict: boolean,
+  hubChecker: HubStatusChecker = checkHubStatus,
+): Promise<RepoReport> {
   const kind: RepoKind = await detectKind(dir)
   const repo = await resolveRepoIdentity(dir)
   const issues: CheckIssue[] = []
@@ -110,7 +116,7 @@ export async function checkRepo(dir: string, strict: boolean): Promise<RepoRepor
       if (pkg !== null) {
         const patchIssues = await checkPatch(dir, kind, pkg['name'] as string | undefined)
         issues.push(...patchIssues)
-        issues.push(...await checkBuildPitfalls(dir, pkg))
+        issues.push(...await checkBuildPitfalls(dir, kind, pkg))
         // 生态合规（plan §4.5）：core row id + 安装边界文档
         issues.push(...await checkCoreRowIdsOf(dir))
         const docs = await checkProfileInstallDocs(dir, kind)
@@ -131,7 +137,7 @@ export async function checkRepo(dir: string, strict: boolean): Promise<RepoRepor
 
   // hub 状态（registry/skill/collection/bundle 都查；unknown/infra 跳过）
   if (kind !== 'unknown' && kind !== 'infra') {
-    const hub = await checkHubStatus(repo, kind)
+    const hub = await hubChecker(repo, kind)
     issues.push(...hub.issues)
   }
 

@@ -16,14 +16,26 @@ const codes = (issues: Array<{ code: string }>) => issues.map(i => i.code)
 describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
   it('passes a compliant plugin', async () => {
     const dir = goodPlugin()
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toEqual([])
+    expect(codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))).toEqual([])
+  })
+
+  it('does not run TypeScript source/tsconfig checks for a plain bundle (#5)', async () => {
+    const dir = makePlugin({
+      'package.json': pkg(),
+      'src/index.ts': "import { x } from './x.ts'",
+      'lib/index.js': 'export {}',
+    })
+    const issues = codes(await checkBuildPitfalls(dir, 'bundle', JSON.parse(pkg())))
+    expect(issues).not.toContain('no-source-entry')
+    expect(issues).not.toContain('no-tsconfig')
+    expect(issues).not.toContain('missing-ts-ext-imports')
   })
 
   it('reports no-source-entry and no-tsconfig', async () => {
     const d1 = makePlugin({ 'tsconfig.json': GOOD_TSCONFIG })
-    expect(codes(await checkBuildPitfalls(d1, JSON.parse(pkg())))).toContain('no-source-entry')
+    expect(codes(await checkBuildPitfalls(d1, 'tool-bundle', JSON.parse(pkg())))).toContain('no-source-entry')
     const d2 = makePlugin({ 'src/index.ts': 'x' })
-    expect(codes(await checkBuildPitfalls(d2, JSON.parse(pkg())))).toContain('no-tsconfig')
+    expect(codes(await checkBuildPitfalls(d2, 'tool-bundle', JSON.parse(pkg())))).toContain('no-tsconfig')
   })
 
   it('resolves tsconfig extends and stops false positives (PC-05)', async () => {
@@ -33,7 +45,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'src/index.ts': "import { x } from './impl.ts'",
       'src/impl.ts': 'export const x = 1',
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))
     expect(issues).not.toContain('missing-ts-ext-imports')
     expect(issues).not.toContain('tsconfig-extends-unresolved')
   })
@@ -44,7 +56,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'src/index.ts': "import { x } from './impl.ts'",
       'src/impl.ts': 'x',
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('tsconfig-extends-unresolved')
+    expect(codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))).toContain('tsconfig-extends-unresolved')
   })
 
   it('reports missing-ts-ext-imports / missing-rewrite-imports as errors (PC-11)', async () => {
@@ -53,13 +65,13 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'src/index.ts': "import { x } from './impl.ts'",
       'src/impl.ts': 'x',
     })
-    expect(codes(await checkBuildPitfalls(d1, JSON.parse(pkg())))).toContain('missing-ts-ext-imports')
+    expect(codes(await checkBuildPitfalls(d1, 'tool-bundle', JSON.parse(pkg())))).toContain('missing-ts-ext-imports')
     const d2 = makePlugin({
       'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib', allowImportingTsExtensions: true } }),
       'src/index.ts': "import { x } from './impl.ts'",
       'src/impl.ts': 'x',
     })
-    expect(codes(await checkBuildPitfalls(d2, JSON.parse(pkg())))).toContain('missing-rewrite-imports')
+    expect(codes(await checkBuildPitfalls(d2, 'tool-bundle', JSON.parse(pkg())))).toContain('missing-rewrite-imports')
   })
 
   it('detects all .ts import forms in lib output (PC-06)', async () => {
@@ -79,7 +91,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
         'src/index.ts': 'x',
         'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib' } }),
       })
-      expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg()))), form).toContain('stale-ts-imports')
+      expect(codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg()))), form).toContain('stale-ts-imports')
     }
   })
 
@@ -88,7 +100,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'src/index.ts': 'x',
       'tsconfig.json': GOOD_TSCONFIG,
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ scripts: {} }))))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg({ scripts: {} }))))
     expect(issues).toContain('no-build-entry')
     expect(issues).not.toContain('no-build-script')
   })
@@ -99,7 +111,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'tsconfig.json': GOOD_TSCONFIG,
       'lib/index.js': 'export {}',
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ scripts: {} }))))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg({ scripts: {} }))))
     expect(issues).toContain('no-build-script')
     expect(issues).not.toContain('no-build-entry')
   })
@@ -109,7 +121,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'tsconfig.json': JSON.stringify({ compilerOptions: { outDir: 'lib' } }),
       'src/index.ts': `const n = Buffer.byteLength('x')\n`,
     })
-    expect(codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))).toContain('implicit-node-types')
+    expect(codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))).toContain('implicit-node-types')
   })
 
   it('accepts declaration-separated bundle layouts (Issue #1: tsc + tsdown)', async () => {
@@ -124,7 +136,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'lib/index.js': 'export const apply = () => {}',
       'lib/types/index.d.ts': 'export declare const apply: () => void',
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))
     expect(issues).not.toContain('lib-layout-mismatch')
   })
 
@@ -135,7 +147,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'lib/index.js': 'export {}',
       'lib/types/out/index.d.ts': 'export {}',
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ types: 'lib/types/out/index.d.ts' }))))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg({ types: 'lib/types/out/index.d.ts' }))))
     expect(issues).not.toContain('lib-layout-mismatch')
   })
 
@@ -147,7 +159,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'lib/types/out/index.d.ts': 'export {}',
     })
     // types 指向 outDir 之外（lib/types/index.d.ts 而非 lib/types/out/...）→ 布局不可信
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))
     expect(issues).toContain('lib-layout-mismatch')
   })
 
@@ -158,7 +170,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       'lib/index.js': 'export {}',
       'lib/types/index.d.ts': 'export {}',
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg({ types: undefined }))))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg({ types: undefined }))))
     expect(issues).toContain('lib-layout-mismatch')
   })
 
@@ -171,7 +183,7 @@ describe('checkBuildPitfalls: 构建陷阱（静态）', () => {
       }),
       'src/index.ts': 'export {}',
     })
-    const issues = codes(await checkBuildPitfalls(dir, JSON.parse(pkg())))
+    const issues = codes(await checkBuildPitfalls(dir, 'tool-bundle', JSON.parse(pkg())))
     expect(issues).toContain('lib-layout-mismatch')
   })
 })

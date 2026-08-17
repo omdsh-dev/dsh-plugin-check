@@ -15,9 +15,9 @@ export type ContainmentResult = {
  * 目标必须是仓库根内的普通文件（lstat 拒绝 symlink；realpath 兜底防 junction 逃逸）。
  */
 export declare function resolveWithin(root: string, target: string): Promise<ContainmentResult>;
-/** npm 包名校验（PC-07）：符合 scoped/unscoped 规则后再叠加组织命名政策。 */
+/** npm 包名校验（PC-07）：近似 validate-npm-package-name 的零依赖子集。 */
 export declare function isValidPackageName(name: string): boolean;
-/** 组织命名政策：@deepseek-ai/*、@dsh-external/* 或 dsh-* 前缀（前缀后必须有实际名称）。 */
+/** 组织命名政策：当前生态组织 scopes 与 dsh-* 前缀（前缀后必须有实际名称）。 */
 export declare function matchesOrgPolicy(name: string): boolean;
 /** 最小 semver 版本格式校验。 */
 export declare function isValidSemver(version: unknown): version is string;

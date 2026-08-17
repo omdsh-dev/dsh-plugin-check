@@ -19,14 +19,24 @@ describe('checkManifest: bundle 清单协议', () => {
     expect(pkg).toBeNull()
   })
 
-  it('rejects invalid npm names and org-policy violations (PC-07)', async () => {
-    for (const bad of ['my-plugin', '@deepseek-ai/', '@deepseek-ai/x/y', '@deepseek-ai/X', 'dsh-', 'dsh-x/evil']) {
+  it('separates invalid npm names from non-org recommendations (PC-07/#8)', async () => {
+    for (const bad of ['@deepseek-ai/', '@deepseek-ai/x/y', '@deepseek-ai/X', 'dsh-x/evil', '@a/-']) {
       const dir = makePlugin({ 'package.json': JSON.stringify({ name: bad }) })
-      expect(codes((await checkManifest(dir)).issues), bad).toContain('invalid-name')
+      expect(codes((await checkManifest(dir)).issues), bad).toContain('invalid-name-format')
+    }
+    for (const legal of ['my-plugin', 'dsh-', '@a/a_']) {
+      const dir = makePlugin({ 'package.json': JSON.stringify({ name: legal }) })
+      const found = codes((await checkManifest(dir)).issues)
+      expect(found, legal).toContain('non-org-recommended-name')
+      expect(found, legal).not.toContain('invalid-name-format')
     }
     expect(isValidPackageName('@deepseek-ai/dsh-tool-csv')).toBe(true)
+    expect(isValidPackageName('dsh-')).toBe(true)
+    expect(isValidPackageName('@a/a_')).toBe(true)
+    expect(isValidPackageName('@a/-')).toBe(false)
     expect(isValidPackageName('dsh-foo')).toBe(true)
     expect(matchesOrgPolicy('@deepseek-ai/x')).toBe(true)
+    expect(matchesOrgPolicy('@omdsh/x')).toBe(true)
     expect(matchesOrgPolicy('other/x')).toBe(false)
   })
 

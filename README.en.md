@@ -14,7 +14,7 @@ Plugin repositories within the organization keep growing, and the pitfalls autho
 
 - **Read-only**: only `readdir/stat/readFile`; never modifies or builds the checked repository
 - **Zero business dependencies**: only node built-in modules (fs/path/child_process)
-- **Hub check is offline-first**: first reads the local hub catalog (`DSH_HUB_SOURCE` or under cwd/hub/), with gh invocation as fallback; if all attempts fail, it silently degrades to `skipped` (reported truthfully, not counted as a warning)
+- **Hub check is offline-first**: first reads the local hub catalog (`DSH_HUB_SOURCE` or under cwd/hub/), with the public `omdsh-dev/dsh-hub-workshop/catalog.json` fetched by `gh` as fallback; if all attempts fail, it silently degrades to `skipped` (reported truthfully, not counted as a warning)
 - **Does not run tsc**: all build pitfalls are detected by static text scanning (fast, side-effect free)
 
 ## Tool Declaration
@@ -39,7 +39,7 @@ Registers the `plugin_check` tool (`@deepseek-ai/dsh-plugin-check`, row id `tool
 
 | Category | error | warning |
 |---|---|---|
-| Manifest protocol | no-manifest / invalid-name / missing-main-or-types / no-patch | incomplete-files / missing-peer / no-bundle-decl |
+| Manifest protocol | no-manifest / invalid-name-format / missing-main-or-types / no-patch | incomplete-files / missing-peer / no-bundle-decl |
 | Patch format | malformed-patch / patch-name-mismatch / duplicate-row-id | unexpected-fields |
 | Build pitfalls | no-source-entry / no-tsconfig / missing-ts-ext-imports / lib-layout-mismatch / stale-ts-imports | missing-rewrite-imports / types-path-mismatch / implicit-node-types / no-build-script |
 | Ecosystem compliance (Profile Bundle) | core-row-id | missing-profile-install-example / manual-install-only / core-modification-required |
@@ -50,6 +50,8 @@ The four ecosystem-compliance items (immediate-adjustments-bundle-profile-plan �
 - `missing-profile-install-example`: the README lacks a `dsh plugin --profile ... add` example;
 - `manual-install-only`: cannot be installed through the standard Profile Bundle (no patch or no example in the README);
 - `core-modification-required`: the default installation flow requires modifying the DSH core (git apply / cp into the monorepo; sections explicitly marked "manual installation and legacy compatibility" are not counted).
+
+Name policy: `invalid-name-format` is an npm-format error; a legal scoped or unscoped personal name is only `non-org-recommended-name` (warning). Recommended ranges are `@deepseek-ai/*`, `@dsh-external/*`, `@omdsh/*`, and `dsh-*`.
 
 `verdict`: 0 errors → pass; any error → fail; warnings only → warn.
 `kind`: registry / skill / collection / tool-bundle / bundle / infra / unknown — different check sets apply per form (X-01 shared matrix).

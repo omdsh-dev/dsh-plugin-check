@@ -13,11 +13,13 @@
  * hub 检查离线优先、失败静默降级。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import { checkHubStatus } from './hub.ts';
 import { type RepoReport } from './report.ts';
 export declare const name = "@deepseek-ai/dsh-plugin-check";
 export declare const inject: string[];
-/** 检查单个仓库（按形态分流）。 */
-export declare function checkRepo(dir: string, strict: boolean): Promise<RepoReport>;
+export type HubStatusChecker = typeof checkHubStatus;
+/** 检查单个仓库（按形态分流）。hub checker 可注入，便于离线测试/批量调用复用 catalog。 */
+export declare function checkRepo(dir: string, strict: boolean, hubChecker?: HubStatusChecker): Promise<RepoReport>;
 /** 扫描目录下所有 dsh-* 插件仓库并逐个检查（lstat 跳过 symlink，仓库数预算）。 */
 export declare function scanDir(parent: string, strict: boolean): Promise<{
     root: string;

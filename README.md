@@ -14,7 +14,7 @@ DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / 
 
 - **只读**：仅 `readdir/stat/readFile`，绝不修改或构建被检查仓库
 - **零业务依赖**：仅 node 内置模块（fs/path/child_process）
-- **hub 检查离线优先**：先读本地 hub catalog（`DSH_HUB_SOURCE` 或 cwd/hub/ 下），gh 调用作 fallback；全部失败静默降级 `skipped`（报告如实标注，不算警告）
+- **hub 检查离线优先**：先读本地 hub catalog（`DSH_HUB_SOURCE` 或 cwd/hub/ 下），再通过 `gh` 读取公开 `omdsh-dev/dsh-hub-workshop/catalog.json`；兼容 `dsh-hub-index/v0.4` 与旧 `repos[].name`；全部失败静默降级 `skipped`（报告如实标注，不算警告）
 - **不执行 tsc**：构建陷阱全部静态文本扫描（快、无副作用）
 
 ## 工具声明
@@ -39,7 +39,7 @@ DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / 
 
 | 类别 | error | warning |
 |---|---|---|
-| 清单协议 | no-manifest / invalid-name / missing-main-or-types / no-patch | incomplete-files / missing-peer / no-bundle-decl |
+| 清单协议 | no-manifest / invalid-name-format / missing-main-or-types / no-patch | incomplete-files / missing-peer / no-bundle-decl |
 | patch 格式 | malformed-patch / patch-name-mismatch / duplicate-row-id | unexpected-fields |
 | 构建陷阱 | no-source-entry / no-tsconfig / missing-ts-ext-imports / lib-layout-mismatch / stale-ts-imports | missing-rewrite-imports / types-path-mismatch / implicit-node-types / no-build-script |
 | 生态合规（Profile Bundle） | core-row-id | missing-profile-install-example / manual-install-only / core-modification-required |
@@ -50,6 +50,8 @@ DSH 插件健康检查工具 —— 扫描插件仓库，诊断**清单协议 / 
 - `missing-profile-install-example`：README 缺 `dsh plugin --profile ... add` 示例；
 - `manual-install-only`：无法通过标准 Profile Bundle 安装（无 patch 或 README 无示例）；
 - `core-modification-required`：默认安装流程要求修改 DSH 核心（git apply / cp 进 monorepo；明确标注"手动安装与旧版本兼容"的段落不计入）。
+
+命名策略：`invalid-name-format` 仅表示 npm 格式错误；合法的个人 scoped/unscoped 名称只产生 `non-org-recommended-name`（warning），不会 fail。推荐范围为 `@deepseek-ai/*`、`@dsh-external/*`、`@omdsh/*` 和 `dsh-*`。
 
 `verdict`：0 error → pass；有 error → fail；仅 warning → warn。
 `kind`：registry / skill / collection / tool-bundle / bundle / infra / unknown——按形态套用不同检查集（X-01 共享矩阵）。

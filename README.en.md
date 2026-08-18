@@ -67,20 +67,20 @@ plugin_check { action: "scan", path: "C:/Users/admin/Desktop/dshext" }
   → {"root":"...","scanned":11,"reports":[...]}   # dsh-my-rsi 等不合规仓库会带 error+suggestions
 ```
 
-## npm 0.1.0-rc.6 Compatibility (Verified)
+## npm 0.1.0-rc.7 Compatibility (Verified)
 
-This plugin has been migrated to the npm 0.1.0-rc.6 dependency line and fully validated end-to-end in an isolated consumer of `@deepseek-ai/dsh@0.1.0-rc.6`:
+This plugin has been migrated to the npm 0.1.0-rc.7 dependency line and fully validated end-to-end in an isolated consumer of `@deepseek-ai/dsh@0.1.0-rc.7`:
 
 - **Type/runtime**: `@deepseek-ai/cordis@^4.0.1` + `@deepseek-ai/dsh-tools@>=0.0.1-rc.1 <0.2.0` + `@deepseek-ai/dsh-invariants@>=0.0.1-rc.1 <0.2.0` (peer); no longer depends on unscoped `cordis`
 - **Standalone build**: `npm install` (devDependencies self-contained: typescript/vitest/@types/node) → `npm run typecheck` → `npm test` → `npm run build` → `npm pack`
-- **Consumption validation**: the tarball is installed into a 0.1.0-rc.6 consumer → `dsh --profile compat --dump-config` shows this plugin's row → the tool actually registers and executes successfully
-- **Launch method**: `npx -p @deepseek-ai/dsh@0.1.0-rc.6 dsh web` (lib production mode; do not `install -g` globally)
+- **Consumption validation**: the tarball is installed into a 0.1.0-rc.7 consumer → `dsh --profile compat --dump-config` shows this plugin's row → the tool actually registers and executes successfully
+- **Launch method**: `npx -p @deepseek-ai/dsh@0.1.0-rc.7 dsh web` (lib production mode; do not `install -g` globally)
 
 ## Installation
 
 ### Profile Bundle (Recommended)
 
-The repository lives at [omdsh-dev/dsh-plugin-check](https://github.com/omdsh-dev/dsh-plugin-check) (public). Install this plugin as a standalone bundle into a profile (DSH 0.1.0-rc.6 (npm)):
+The repository lives at [omdsh-dev/dsh-plugin-check](https://github.com/omdsh-dev/dsh-plugin-check) (public). Install this plugin as a standalone bundle into a profile (DSH 0.1.0-rc.7 (npm)):
 
 ```sh
 # 交互式（web）profile

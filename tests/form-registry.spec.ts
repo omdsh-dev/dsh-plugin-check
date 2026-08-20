@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { detectKind, looksLikeToolPlugin } from '../src/form.ts'
 import { checkRegistry } from '../src/registry.ts'
+import { checkRepo } from '../src/index.ts'
 import { makePlugin } from './helpers.ts'
 
 describe('detectKind: 形态识别（PC-02）', () => {
@@ -12,6 +13,35 @@ describe('detectKind: 形态识别（PC-02）', () => {
   it('detects skill from SKILL.md without package.json', async () => {
     const dir = makePlugin({ 'SKILL.md': '---\nname: x\ndescription: y\n---\n' })
     expect(await detectKind(dir)).toBe('skill')
+  })
+
+  it('validates a single nested skill and does not report malformed-skill', async () => {
+    const dir = makePlugin({ 'skills/one/SKILL.md': '---\nname: one\ndescription: first\n---\n' })
+    expect(await detectKind(dir)).toBe('skill')
+    const report = await checkRepo(dir, false, async () => ({ status: 'in-hub', issues: [] }))
+    expect(report.errors).toEqual([])
+    expect(report.warnings).toEqual([])
+  })
+
+  it('validates every nested skill in a multi-skill repository', async () => {
+    const dir = makePlugin({
+      'skills/one/SKILL.md': '---\nname: one\ndescription: first\n---\n',
+      'skills/two/SKILL.md': '---\nname: two\ndescription: second\n---\n',
+    })
+    const report = await checkRepo(dir, false, async () => ({ status: 'in-hub', issues: [] }))
+    expect(report.errors).toEqual([])
+    expect(report.warnings).toEqual([])
+  })
+
+  it('reports malformed frontmatter in any nested skill', async () => {
+    const dir = makePlugin({
+      'skills/good/SKILL.md': '---\nname: good\ndescription: valid\n---\n',
+      'skills/bad/SKILL.md': '---\nname: bad\n---\n',
+    })
+    const report = await checkRepo(dir, false, async () => ({ status: 'in-hub', issues: [] }))
+    expect(report.errors).toEqual([])
+    expect(report.warnings.map(i => i.code)).toContain('malformed-skill')
+    expect(report.warnings.some(i => i.detail.includes('skills/bad/SKILL.md'))).toBe(true)
   })
 
   it('detects collection from catalog.json', async () => {

@@ -47,21 +47,58 @@ async function checkCoreRowIdsOf(dir: string): Promise<CheckIssue[]> {
   }
 }
 
-/** skill 形态基本校验：SKILL.md 存在且有 name/description frontmatter。 */
+/**
+ * 找出仓库内的 skill 文档：根 SKILL.md，以及 skills/<name>/SKILL.md 的全部直接子目录。
+ * 不只取第一个 nested skill，避免多 skill 仓库被部分校验；排序保证报告稳定。
+ */
+async function findSkillFiles(dir: string): Promise<string[]> {
+  const files: string[] = []
+  const root = join(dir, 'SKILL.md')
+  try {
+    const st = await fs.lstat(root)
+    if (st.isFile() && !st.isSymbolicLink()) files.push(root)
+  } catch { /* 根 skill 可不存在 */ }
+
+  try {
+    const entries = await fs.readdir(join(dir, 'skills'), { withFileTypes: true })
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+      const nested = join(dir, 'skills', entry.name, 'SKILL.md')
+      try {
+        const st = await fs.lstat(nested)
+        if (st.isFile() && !st.isSymbolicLink()) files.push(nested)
+      } catch { /* missing nested skill is handled by the marker check */ }
+    }
+  } catch { /* no skills directory */ }
+  return files
+}
+
+/** skill 形态基本校验：校验根 skill 和全部 skills/<name>/SKILL.md。 */
 async function checkSkill(dir: string): Promise<CheckIssue[]> {
   const issues: CheckIssue[] = []
-  try {
-    const text = await fs.readFile(join(dir, 'SKILL.md'), 'utf8')
-    const m = /^---\n([\s\S]*?)\n---/.exec(text)
+  const files = await findSkillFiles(dir)
+  if (files.length === 0) {
+    issues.push({ code: 'malformed-skill', detail: 'SKILL.md 缺失（根目录或 skills/<name>/SKILL.md）' })
+    return issues
+  }
+
+  for (const file of files) {
+    const label = file.slice(dir.length + 1).replaceAll('\\', '/')
+    let text: string
+    try {
+      text = await fs.readFile(file, 'utf8')
+    } catch {
+      issues.push({ code: 'malformed-skill', detail: `${label} 不可读` })
+      continue
+    }
+    const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
     if (!m) {
-      issues.push({ code: 'malformed-skill', detail: 'SKILL.md 缺 frontmatter（--- 包裹的 YAML）' })
-      return issues
+      issues.push({ code: 'malformed-skill', detail: `${label} 缺 frontmatter（--- 包裹的 YAML）` })
+      continue
     }
     const fm = m[1]!
-    if (!/^name:\s*\S+/m.test(fm)) issues.push({ code: 'malformed-skill', detail: 'frontmatter 缺 name' })
-    if (!/^description:\s*\S+/m.test(fm)) issues.push({ code: 'malformed-skill', detail: 'frontmatter 缺 description' })
-  } catch {
-    issues.push({ code: 'malformed-skill', detail: 'SKILL.md 缺失' })
+    if (!/^name:\s*\S+/m.test(fm)) issues.push({ code: 'malformed-skill', detail: `${label} frontmatter 缺 name` })
+    if (!/^description:\s*\S+/m.test(fm)) issues.push({ code: 'malformed-skill', detail: `${label} frontmatter 缺 description` })
   }
   return issues
 }
@@ -161,10 +198,20 @@ export async function scanDir(parent: string, strict: boolean): Promise<{ root: 
     let st
     try { st = await fs.lstat(full) } catch { continue }
     if (!st.isDirectory() || st.isSymbolicLink()) continue
-    // 有 package.json 或 dsh.plugin.json 或 SKILL.md 或 catalog.json 才算项目
+    // 有 package.json、dsh.plugin.json、SKILL.md、catalog.json，或 skills/*/SKILL.md 才算项目。
+    // skill 仓库（例如 dsh-plugin-dev）通常把 SKILL.md 放在 skills/<name>/ 下。
     let marker = false
     for (const m of ['package.json', 'dsh.plugin.json', 'SKILL.md', 'catalog.json']) {
       try { await fs.access(join(full, m)); marker = true; break } catch { /* 继续 */ }
+    }
+    if (!marker) {
+      try {
+        const skillEntries = await fs.readdir(join(full, 'skills'), { withFileTypes: true })
+        marker = skillEntries.some(entry => entry.isDirectory())
+          && (await Promise.all(skillEntries.filter(entry => entry.isDirectory()).map(async entry => {
+            try { await fs.access(join(full, 'skills', entry.name, 'SKILL.md')); return true } catch { return false }
+          }))).some(Boolean)
+      } catch { /* 无 skills 目录 */ }
     }
     if (!marker) continue
     reports.push(await checkRepo(full, strict))

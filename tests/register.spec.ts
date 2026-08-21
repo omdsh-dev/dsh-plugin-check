@@ -5,7 +5,7 @@ import { name, inject, apply } from '../src/index.ts'
 describe('plugin_check: plugin registration contract (AUDIT-CROSS-02)', () => {
   it('exports the cordis plugin contract', () => {
     expect(typeof name).toBe('string')
-    expect(name).toBe('@deepseek-ai/dsh-plugin-check')
+    expect(name).toBe('@omdsh-dev/dsh-plugin-check')
     expect(inject).toContain('tools')
     expect(typeof apply).toBe('function')
   })

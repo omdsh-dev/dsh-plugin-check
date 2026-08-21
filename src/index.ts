@@ -27,7 +27,7 @@ import { checkProfileInstallDocs, checkCoreRowIds, isBundleInstallable } from '.
 import { parsePatchSections } from './patch.ts'
 import { buildRepoReport, CHECK_SCHEMA, type CheckIssue, type RepoReport } from './report.ts'
 
-export const name = '@deepseek-ai/dsh-plugin-check'
+export const name = '@omdsh-dev/dsh-plugin-check'
 export const inject = ['tools']
 
 interface PluginCheckArgs {
